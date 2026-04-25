@@ -11,9 +11,15 @@ from urllib import error, request
 
 import fitz
 import pandas as pd
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+try:
+    import cv2
+    import numpy as np
+except ImportError:
+    cv2 = None  # type: ignore[assignment]
+    np = None  # type: ignore[assignment]
 try:
     from rapidocr_onnxruntime import RapidOCR
 except ImportError:
@@ -103,6 +109,7 @@ SECTION_PATTERNS = {
 
 STANDARD_PATTERN = re.compile(r"\b(?:ASTM|MIL-STD|ISO|SAE)[\s\-]*[A-Z0-9\-.]+\b")
 ITEM_CALLOUT_PATTERN = re.compile(r"\b(?:ITEM|ITM|BALLOON)\s*#?\s*(\d{1,3})\b", re.IGNORECASE)
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 @app.get("/api/health")
@@ -118,8 +125,12 @@ async def analyze(
     inference_mode: Literal["online", "local"] = Form(default="online"),
     ollama_api_key: str | None = Form(default=None),
 ) -> AnalysisResult:
-    pdf_bytes = await drawing.read()
-    page_texts, ocr_low_conf_pages = extract_pdf_text_with_ocr(pdf_bytes)
+    drawing_bytes = await drawing.read()
+    page_texts, ocr_low_conf_pages = extract_drawing_text(
+        drawing_bytes=drawing_bytes,
+        filename=drawing.filename,
+        content_type=drawing.content_type,
+    )
     sections = detect_sections(page_texts)
 
     context_rules = await extract_context_rules(context_files)
@@ -169,6 +180,27 @@ async def analyze(
     )
 
 
+def extract_drawing_text(
+    drawing_bytes: bytes,
+    filename: str | None,
+    content_type: str | None,
+) -> tuple[list[str], list[int]]:
+    lower_name = (filename or "").lower()
+    ext = os.path.splitext(lower_name)[1]
+    ctype = (content_type or "").lower()
+
+    if ctype == "application/pdf" or ext == ".pdf":
+        return extract_pdf_text_with_ocr(drawing_bytes)
+
+    if ctype.startswith("image/") or ext in IMAGE_EXTENSIONS:
+        return extract_image_text_with_ocr(drawing_bytes)
+
+    raise HTTPException(
+        status_code=400,
+        detail="Unsupported drawing file type. Upload PDF, JPG, JPEG, PNG, or WEBP.",
+    )
+
+
 def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> tuple[list[str], list[int]]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page_texts: list[str] = []
@@ -186,28 +218,112 @@ def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> tuple[list[str], list[int]]:
             low_conf_pages.append(i + 1)
             continue
 
-        pix = page.get_pixmap(dpi=250)
-        ocr_result, _ = ocr_engine(pix.tobytes("png"))
+        pix = page.get_pixmap(dpi=300)
+        ocr_lines, low_conf = run_ocr_with_preprocessing(pix.tobytes("png"))
 
-        if not ocr_result:
-            page_texts.append(text)
+        if not ocr_lines:
+            page_texts.append(text.strip())
             low_conf_pages.append(i + 1)
             continue
 
-        lines: list[str] = []
-        low_conf = False
-        for row in ocr_result:
-            rec_text = row[1]
-            rec_score = row[2]
-            lines.append(rec_text)
-            if rec_score < 0.78:
-                low_conf = True
+        merged = text.strip()
+        ocr_text = "\n".join(ocr_lines)
+        if merged and ocr_text:
+            merged = f"{merged}\n{ocr_text}"
+        elif ocr_text:
+            merged = ocr_text
 
-        page_texts.append("\n".join(lines))
+        page_texts.append(merged)
         if low_conf:
             low_conf_pages.append(i + 1)
 
     return page_texts, low_conf_pages
+
+
+def extract_image_text_with_ocr(image_bytes: bytes) -> tuple[list[str], list[int]]:
+    if ocr_engine is None:
+        return [""], [1]
+
+    lines, low_conf = run_ocr_with_preprocessing(image_bytes)
+    extracted = "\n".join(lines).strip()
+    if not extracted:
+        return [""], [1]
+    if low_conf:
+        return [extracted], [1]
+    return [extracted], []
+
+
+def run_ocr_with_preprocessing(image_bytes: bytes) -> tuple[list[str], bool]:
+    candidates = [image_bytes]
+
+    if cv2 is not None and np is not None:
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if decoded is not None:
+            gray = cv2.cvtColor(decoded, cv2.COLOR_BGR2GRAY)
+            denoised = cv2.bilateralFilter(gray, 7, 35, 35)
+            adaptive = cv2.adaptiveThreshold(
+                denoised,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                10,
+            )
+            enlarged = cv2.resize(
+                adaptive,
+                None,
+                fx=1.6,
+                fy=1.6,
+                interpolation=cv2.INTER_CUBIC,
+            )
+            ok, preprocessed = cv2.imencode(".png", enlarged)
+            if ok:
+                candidates.append(preprocessed.tobytes())
+
+    best_lines: list[str] = []
+    best_quality = -1.0
+    best_low_conf = True
+
+    for candidate in candidates:
+        ocr_result, _ = ocr_engine(candidate)
+        if not ocr_result:
+            continue
+
+        lines, avg_conf = normalize_ocr_output(ocr_result)
+        quality = sum(len(line) for line in lines) + (avg_conf * 60.0)
+        low_conf = avg_conf < 0.78
+        if quality > best_quality:
+            best_quality = quality
+            best_lines = lines
+            best_low_conf = low_conf
+
+    return best_lines, best_low_conf
+
+
+def normalize_ocr_output(ocr_result: list) -> tuple[list[str], float]:
+    lines: list[str] = []
+    confidences: list[float] = []
+
+    for row in ocr_result:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+
+        rec_text = str(row[1]).strip()
+        rec_score = 0.0
+        if len(row) > 2:
+            try:
+                rec_score = float(row[2])
+            except (TypeError, ValueError):
+                rec_score = 0.0
+
+        if rec_text:
+            lines.append(rec_text)
+            confidences.append(rec_score)
+
+    if not confidences:
+        return lines, 0.0
+    return lines, sum(confidences) / len(confidences)
 
 
 def detect_sections(page_texts: list[str]) -> list[str]:

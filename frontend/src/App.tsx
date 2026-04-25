@@ -154,8 +154,8 @@ export function App() {
           )}
 
           <label>
-            Drawing PDF (required)
-            <input type="file" accept="application/pdf" onChange={onDrawingChange} />
+            Drawing file (required: PDF/JPG/PNG/WEBP)
+            <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf" onChange={onDrawingChange} />
           </label>
 
           <label>
