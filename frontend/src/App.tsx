@@ -30,9 +30,11 @@ type AnalysisResult = {
     pages_processed: number
     used_foundational_context: boolean
     context_files_count: number
+    inference_mode: 'online' | 'local'
     llm_enabled: boolean
     llm_used: boolean
     llm_model: string | null
+    llm_endpoint: string | null
     llm_error: string | null
   }
 }
@@ -41,6 +43,8 @@ export function App() {
   const [drawing, setDrawing] = useState<File | null>(null)
   const [contextFiles, setContextFiles] = useState<File[]>([])
   const [useFoundational, setUseFoundational] = useState(false)
+  const [inferenceMode, setInferenceMode] = useState<'online' | 'local'>('online')
+  const [userApiKey, setUserApiKey] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -66,6 +70,10 @@ export function App() {
       setError('Please upload one drawing PDF first.')
       return
     }
+    if (inferenceMode === 'online' && !userApiKey.trim()) {
+      setError('Paste your Ollama API key to run in online mode.')
+      return
+    }
 
     setError(null)
     setIsLoading(true)
@@ -74,6 +82,10 @@ export function App() {
     const formData = new FormData()
     formData.append('drawing', drawing)
     formData.append('use_foundational_context', String(useFoundational))
+    formData.append('inference_mode', inferenceMode)
+    if (inferenceMode === 'online' && userApiKey.trim()) {
+      formData.append('ollama_api_key', userApiKey.trim())
+    }
     contextFiles.forEach((file) => formData.append('context_files', file))
 
     try {
@@ -106,6 +118,41 @@ export function App() {
       <section className="card">
         <h2>Upload and Analyze</h2>
         <form onSubmit={onSubmit} className="form-grid">
+          <fieldset className="mode-switch" aria-label="Inference mode">
+            <legend>Run mode</legend>
+            <label className="inline">
+              <input
+                type="radio"
+                name="inference_mode"
+                checked={inferenceMode === 'online'}
+                onChange={() => setInferenceMode('online')}
+              />
+              Run online (Ollama Cloud)
+            </label>
+            <label className="inline">
+              <input
+                type="radio"
+                name="inference_mode"
+                checked={inferenceMode === 'local'}
+                onChange={() => setInferenceMode('local')}
+              />
+              Run locally on device
+            </label>
+          </fieldset>
+
+          {inferenceMode === 'online' && (
+            <label>
+              Ollama API key (required for online mode)
+              <input
+                type="password"
+                placeholder="Paste your Ollama API key"
+                value={userApiKey}
+                onChange={(event) => setUserApiKey(event.target.value)}
+              />
+              <small>Your key is sent only with this request and is not persisted by the app.</small>
+            </label>
+          )}
+
           <label>
             Drawing PDF (required)
             <input type="file" accept="application/pdf" onChange={onDrawingChange} />
@@ -137,6 +184,11 @@ export function App() {
             {isLoading ? 'Analyzing…' : 'Run compliance check'}
           </button>
         </form>
+        <div className="instructions">
+          <h3>How to run</h3>
+          <p><strong>Run online:</strong> Create key at https://ollama.com/settings/keys, select online mode, paste key, upload files, run.</p>
+          <p><strong>Run locally on device:</strong> Start Ollama locally, run <code>ollama pull gemma4:e4b</code>, choose local mode, upload files, run.</p>
+        </div>
         {error && <p className="error">{error}</p>}
       </section>
 
@@ -148,8 +200,10 @@ export function App() {
             <span>Total issues: {result.issues.length}</span>
             <span>High/Critical: {severeCount}</span>
             <span>Sections detected: {result.sections_detected.join(', ') || 'none'}</span>
+            <span>Mode: {result.meta.inference_mode}</span>
             <span>LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
           </div>
+          {result.meta.llm_endpoint && <p>Endpoint: {result.meta.llm_endpoint}</p>}
           {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
 
           <table>

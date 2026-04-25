@@ -30,8 +30,10 @@ app.add_middleware(
 )
 
 ocr_engine = RapidOCR() if RapidOCR else None
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:31b-cloud")
+OLLAMA_LOCAL_URL = os.getenv("OLLAMA_LOCAL_URL", "http://localhost:11434/api/chat")
+OLLAMA_CLOUD_URL = os.getenv("OLLAMA_CLOUD_URL", "https://ollama.com/api/chat")
+OLLAMA_LOCAL_MODEL = os.getenv("OLLAMA_LOCAL_MODEL", "gemma4:e4b")
+OLLAMA_CLOUD_MODEL = os.getenv("OLLAMA_CLOUD_MODEL", "gemma4:31b")
 OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "true").lower() != "false"
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
@@ -61,9 +63,11 @@ class AnalysisMeta(BaseModel):
     pages_processed: int
     used_foundational_context: bool
     context_files_count: int
+    inference_mode: Literal["online", "local"]
     llm_enabled: bool
     llm_used: bool
     llm_model: str | None
+    llm_endpoint: str | None
     llm_error: str | None
 
 
@@ -79,6 +83,14 @@ class AnalysisResult(BaseModel):
 class ContextRule:
     old_value: str
     new_value: str
+
+
+@dataclass
+class LlmRuntimeConfig:
+    mode: Literal["online", "local"]
+    model: str
+    url: str
+    api_key: str | None
 
 
 SECTION_PATTERNS = {
@@ -103,6 +115,8 @@ async def analyze(
     drawing: UploadFile = File(...),
     context_files: list[UploadFile] = File(default=[]),
     use_foundational_context: bool = Form(default=False),
+    inference_mode: Literal["online", "local"] = Form(default="online"),
+    ollama_api_key: str | None = Form(default=None),
 ) -> AnalysisResult:
     pdf_bytes = await drawing.read()
     page_texts, ocr_low_conf_pages = extract_pdf_text_with_ocr(pdf_bytes)
@@ -115,7 +129,8 @@ async def analyze(
 
     issues.extend(find_outdated_references(page_texts, context_rules))
     issues.extend(find_bom_view_mismatches(page_texts))
-    llm_issues, llm_used, llm_error = find_llm_issues(page_texts, context_rules, sections)
+    llm_runtime = resolve_llm_runtime(inference_mode, ollama_api_key)
+    llm_issues, llm_used, llm_error = find_llm_issues(page_texts, context_rules, sections, llm_runtime)
     issues.extend(llm_issues)
 
     for page in ocr_low_conf_pages:
@@ -144,9 +159,11 @@ async def analyze(
             pages_processed=len(page_texts),
             used_foundational_context=use_foundational_context,
             context_files_count=len(context_files),
+            inference_mode=inference_mode,
             llm_enabled=OLLAMA_ENABLED,
             llm_used=llm_used,
-            llm_model=OLLAMA_MODEL if OLLAMA_ENABLED else None,
+            llm_model=llm_runtime.model if OLLAMA_ENABLED else None,
+            llm_endpoint=llm_runtime.url if OLLAMA_ENABLED else None,
             llm_error=llm_error,
         ),
     )
@@ -365,13 +382,18 @@ def truncate(text: str, max_len: int = 90) -> str:
 
 
 def find_llm_issues(
-    page_texts: list[str], rules: list[ContextRule], sections: list[str]
+    page_texts: list[str],
+    rules: list[ContextRule],
+    sections: list[str],
+    llm_runtime: LlmRuntimeConfig,
 ) -> tuple[list[ComplianceIssue], bool, str | None]:
     if not OLLAMA_ENABLED:
         return [], False, None
+    if llm_runtime.mode == "online" and not llm_runtime.api_key:
+        return [], False, "Online mode requires an Ollama API key."
 
     prompt = build_llm_prompt(page_texts, rules, sections)
-    response_text, error_message = call_ollama(prompt)
+    response_text, error_message = call_ollama(prompt, llm_runtime)
     if error_message:
         return [], False, error_message
 
@@ -450,9 +472,27 @@ Drawing text:
 """.strip()
 
 
-def call_ollama(prompt: str) -> tuple[str, str | None]:
+def resolve_llm_runtime(inference_mode: Literal["online", "local"], request_key: str | None) -> LlmRuntimeConfig:
+    cleaned_key = request_key.strip() if request_key else None
+    if inference_mode == "online":
+        return LlmRuntimeConfig(
+            mode="online",
+            model=OLLAMA_CLOUD_MODEL,
+            url=OLLAMA_CLOUD_URL,
+            api_key=cleaned_key or OLLAMA_API_KEY,
+        )
+
+    return LlmRuntimeConfig(
+        mode="local",
+        model=OLLAMA_LOCAL_MODEL,
+        url=OLLAMA_LOCAL_URL,
+        api_key=None,
+    )
+
+
+def call_ollama(prompt: str, llm_runtime: LlmRuntimeConfig) -> tuple[str, str | None]:
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": llm_runtime.model,
         "messages": [
             {
                 "role": "system",
@@ -466,11 +506,11 @@ def call_ollama(prompt: str) -> tuple[str, str | None]:
 
     try:
         headers = {"Content-Type": "application/json"}
-        if OLLAMA_API_KEY:
-            headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
+        if llm_runtime.api_key:
+            headers["Authorization"] = f"Bearer {llm_runtime.api_key}"
 
         req = request.Request(
-            OLLAMA_URL,
+            llm_runtime.url,
             method="POST",
             headers=headers,
             data=json.dumps(payload).encode("utf-8"),
@@ -486,7 +526,9 @@ def call_ollama(prompt: str) -> tuple[str, str | None]:
         detail = exc.read().decode("utf-8", errors="ignore")
         return "", f"Ollama HTTP error {exc.code}: {detail}"
     except error.URLError:
-        return "", "Could not connect to Ollama. Is it running on localhost:11434?"
+        if llm_runtime.mode == "local":
+            return "", "Could not connect to local Ollama on localhost:11434."
+        return "", "Could not connect to Ollama Cloud API."
     except TimeoutError:
         return "", f"Ollama timed out after {OLLAMA_TIMEOUT_SECONDS:.0f}s."
     except Exception as exc:

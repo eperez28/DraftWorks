@@ -37,9 +37,28 @@ body {
   gap: 12px;
 }
 
+.mode-switch {
+  border: 1px solid #d7d7d7;
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.mode-switch legend {
+  font-weight: 700;
+  padding: 0 6px;
+}
+
 label {
   display: grid;
   gap: 6px;
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .checkbox-row {
@@ -84,6 +103,20 @@ button:disabled {
 .error {
   color: #a31621;
   margin-top: 8px;
+}
+
+.instructions {
+  margin-top: 12px;
+  border-top: 1px solid #d9d9d9;
+  padding-top: 10px;
+}
+
+.instructions h3 {
+  margin: 0 0 8px;
+}
+
+.instructions p {
+  margin: 6px 0;
 }
 
 .kpis {
