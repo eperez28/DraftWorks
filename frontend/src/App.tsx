@@ -112,7 +112,7 @@ export function App() {
     <main className="page">
       <header className="hero">
         <h1>DraftWorks</h1>
-        <p>AI drawing compliance checker MVP for defense and mechanical workflows.</p>
+        <p className="subhead">AI drawing compliance checker MVP for defense and mechanical workflows.</p>
       </header>
 
       <section className="card">
@@ -186,8 +186,14 @@ export function App() {
         </form>
         <div className="instructions">
           <h3>How to run</h3>
-          <p><strong>Run online:</strong> Create key at https://ollama.com/settings/keys, select online mode, paste key, upload files, run.</p>
-          <p><strong>Run locally on device:</strong> Start Ollama locally, run <code>ollama pull gemma4:e4b</code>, choose local mode, upload files, run.</p>
+          <ol>
+            <li>
+              <strong>Run online:</strong> create key at <code>https://ollama.com/settings/keys</code>, select online mode, paste key, upload files, run.
+            </li>
+            <li>
+              <strong>Run locally on device:</strong> start Ollama locally, run <code>ollama pull gemma4:e4b</code>, choose local mode, upload files, run.
+            </li>
+          </ol>
         </div>
         {error && <p className="error">{error}</p>}
       </section>
@@ -197,13 +203,13 @@ export function App() {
           <h2>Results</h2>
           <p>{result.summary}</p>
           <div className="kpis">
-            <span>Total issues: {result.issues.length}</span>
-            <span>High/Critical: {severeCount}</span>
-            <span>Sections detected: {result.sections_detected.join(', ') || 'none'}</span>
-            <span>Mode: {result.meta.inference_mode}</span>
-            <span>LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
+            <span className="pill">Total issues: {result.issues.length}</span>
+            <span className="pill">High/Critical: {severeCount}</span>
+            <span className="pill">Sections: {result.sections_detected.join(', ') || 'none'}</span>
+            <span className="pill">Mode: {result.meta.inference_mode}</span>
+            <span className="pill">LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
           </div>
-          {result.meta.llm_endpoint && <p>Endpoint: {result.meta.llm_endpoint}</p>}
+          {result.meta.llm_endpoint && <p className="meta-line">Endpoint: <code>{result.meta.llm_endpoint}</code></p>}
           {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
 
           <table>
