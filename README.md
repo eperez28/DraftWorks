@@ -11,6 +11,7 @@ DraftWorks
 
 ## What We Built
 DraftWorks is an AI-assisted drawing compliance checker for defense/mechanical engineering workflows.
+Project built during the 2026 SCSP Hackathon in Boston.
 
 For the MVP, users upload a drawing PDF and optional context files (CSV/TXT/JSON). The app extracts drawing text, detects core sections, compares against known context updates, and returns issues in a structured format suitable for markup or redline overlays.
 
