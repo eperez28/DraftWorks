@@ -30,6 +30,10 @@ type AnalysisResult = {
     pages_processed: number
     used_foundational_context: boolean
     context_files_count: number
+    llm_enabled: boolean
+    llm_used: boolean
+    llm_model: string | null
+    llm_error: string | null
   }
 }
 
@@ -144,7 +148,9 @@ export function App() {
             <span>Total issues: {result.issues.length}</span>
             <span>High/Critical: {severeCount}</span>
             <span>Sections detected: {result.sections_detected.join(', ') || 'none'}</span>
+            <span>LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
           </div>
+          {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
 
           <table>
             <thead>

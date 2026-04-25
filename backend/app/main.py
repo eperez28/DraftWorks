@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass
 from typing import Literal
+from urllib import error, request
 
 import fitz
 import pandas as pd
@@ -28,6 +30,11 @@ app.add_middleware(
 )
 
 ocr_engine = RapidOCR() if RapidOCR else None
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:31b-cloud")
+OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "true").lower() != "false"
+OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
 
 
 class ComplianceIssue(BaseModel):
@@ -54,6 +61,10 @@ class AnalysisMeta(BaseModel):
     pages_processed: int
     used_foundational_context: bool
     context_files_count: int
+    llm_enabled: bool
+    llm_used: bool
+    llm_model: str | None
+    llm_error: str | None
 
 
 class AnalysisResult(BaseModel):
@@ -99,9 +110,13 @@ async def analyze(
 
     context_rules = await extract_context_rules(context_files)
     issues: list[ComplianceIssue] = []
+    llm_used = False
+    llm_error: str | None = None
 
     issues.extend(find_outdated_references(page_texts, context_rules))
     issues.extend(find_bom_view_mismatches(page_texts))
+    llm_issues, llm_used, llm_error = find_llm_issues(page_texts, context_rules, sections)
+    issues.extend(llm_issues)
 
     for page in ocr_low_conf_pages:
         issues.append(
@@ -129,6 +144,10 @@ async def analyze(
             pages_processed=len(page_texts),
             used_foundational_context=use_foundational_context,
             context_files_count=len(context_files),
+            llm_enabled=OLLAMA_ENABLED,
+            llm_used=llm_used,
+            llm_model=OLLAMA_MODEL if OLLAMA_ENABLED else None,
+            llm_error=llm_error,
         ),
     )
 
@@ -343,3 +362,152 @@ def truncate(text: str, max_len: int = 90) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
+
+
+def find_llm_issues(
+    page_texts: list[str], rules: list[ContextRule], sections: list[str]
+) -> tuple[list[ComplianceIssue], bool, str | None]:
+    if not OLLAMA_ENABLED:
+        return [], False, None
+
+    prompt = build_llm_prompt(page_texts, rules, sections)
+    response_text, error_message = call_ollama(prompt)
+    if error_message:
+        return [], False, error_message
+
+    payload = parse_json_object(response_text)
+    if not payload:
+        return [], False, "Gemma response could not be parsed as JSON."
+
+    raw_issues = payload.get("issues", [])
+    if not isinstance(raw_issues, list):
+        return [], False, "Gemma JSON did not include a valid 'issues' array."
+
+    issues: list[ComplianceIssue] = []
+    for idx, raw in enumerate(raw_issues, start=1):
+        if not isinstance(raw, dict):
+            continue
+
+        raw.setdefault("id", f"llm-{idx}")
+        raw.setdefault("recommendation", "Review and update drawing content per approved context.")
+        raw.setdefault("section", "notes")
+        raw.setdefault("severity", "medium")
+        raw.setdefault("issue_type", "missing_reference")
+        raw.setdefault("message", "LLM-detected compliance concern.")
+        raw.setdefault("page", None)
+        raw.setdefault("evidence", "Generated from drawing/context comparison.")
+        raw.setdefault("expected_value", None)
+        raw.setdefault("found_value", None)
+
+        try:
+            issues.append(ComplianceIssue(**raw))
+        except Exception:
+            continue
+
+    return dedupe_issues(issues), len(issues) > 0, None
+
+
+def build_llm_prompt(page_texts: list[str], rules: list[ContextRule], sections: list[str]) -> str:
+    sampled_pages = []
+    for idx, text in enumerate(page_texts[:4], start=1):
+        sampled_pages.append(f"PAGE {idx}:\n{truncate(text, 3500)}")
+
+    rules_text = "\n".join([f"- {rule.old_value} => {rule.new_value}" for rule in rules[:50]])
+    sections_text = ", ".join(sections) if sections else "none"
+    drawing_excerpt = "\n\n".join(sampled_pages)
+
+    return f"""
+You are a drawing compliance checker. Compare drawing content to approved context.
+Return STRICT JSON only.
+
+Required JSON shape:
+{{
+  "issues": [
+    {{
+      "id": "string",
+      "issue_type": "outdated_standard|outdated_spec|material_mismatch|bom_mismatch|missing_reference|ocr_uncertain",
+      "severity": "low|medium|high|critical",
+      "message": "string",
+      "page": 1,
+      "section": "notes|revision_block|title_block|bom|drawing_views",
+      "evidence": "string",
+      "expected_value": "string|null",
+      "found_value": "string|null",
+      "recommendation": "string"
+    }}
+  ]
+}}
+
+Only report real, evidence-backed issues.
+If there are no issues, return: {{"issues":[]}}
+
+Detected sections: {sections_text}
+Context rules:
+{rules_text or "- none"}
+
+Drawing text:
+{drawing_excerpt}
+""".strip()
+
+
+def call_ollama(prompt: str) -> tuple[str, str | None]:
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You output only compact JSON and no extra text.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }
+
+    try:
+        headers = {"Content-Type": "application/json"}
+        if OLLAMA_API_KEY:
+            headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
+
+        req = request.Request(
+            OLLAMA_URL,
+            method="POST",
+            headers=headers,
+            data=json.dumps(payload).encode("utf-8"),
+        )
+        with request.urlopen(req, timeout=OLLAMA_TIMEOUT_SECONDS) as resp:
+            body = resp.read().decode("utf-8")
+        parsed = json.loads(body)
+        content = parsed.get("message", {}).get("content", "")
+        if not content:
+            return "", "Ollama returned an empty response."
+        return content, None
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        return "", f"Ollama HTTP error {exc.code}: {detail}"
+    except error.URLError:
+        return "", "Could not connect to Ollama. Is it running on localhost:11434?"
+    except TimeoutError:
+        return "", f"Ollama timed out after {OLLAMA_TIMEOUT_SECONDS:.0f}s."
+    except Exception as exc:
+        return "", f"Ollama call failed: {exc}"
+
+
+def parse_json_object(text: str) -> dict | None:
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            parsed = json.loads(stripped)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+
+    match = re.search(r"\{[\s\S]*\}", stripped)
+    if not match:
+        return None
+
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None

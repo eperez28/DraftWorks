@@ -33,6 +33,21 @@ npm --prefix frontend install
 python3 -m pip install -r backend/requirements.txt
 ```
 
+### Ollama Cloud + Gemma 4 (recommended for hackathon)
+```bash
+ollama signin
+ollama pull gemma4:31b-cloud
+```
+
+The app defaults to `gemma4:31b-cloud` and calls your local Ollama daemon (`http://localhost:11434/api/chat`), which routes inference to Ollama Cloud after sign-in.
+
+### Optional direct cloud API mode (no local daemon routing)
+```bash
+export OLLAMA_URL=https://ollama.com/api/chat
+export OLLAMA_API_KEY=your_api_key
+export OLLAMA_MODEL=gemma4:31b
+```
+
 ### Start (single command)
 ```bash
 npm run dev
@@ -40,6 +55,13 @@ npm run dev
 
 - Frontend: `http://localhost:5173`
 - API: `http://localhost:8000`
+
+### Optional backend env vars
+- `OLLAMA_MODEL` (default: `gemma4:31b-cloud`)
+- `OLLAMA_URL` (default: `http://localhost:11434/api/chat`)
+- `OLLAMA_ENABLED` (default: `true`)
+- `OLLAMA_TIMEOUT_SECONDS` (default: `45`)
+- `OLLAMA_API_KEY` (required only for direct `https://ollama.com/api/...` usage)
 
 ## Output Schema (MVP)
 Each detected issue returns:
