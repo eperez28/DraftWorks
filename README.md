@@ -1,17 +1,10 @@
 # DraftWorks
 
-Live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
-
 ## Team Name
 DraftWorks
 
-## Team Members
-- Emanuel
-- Sanja
-- Axel
-
 ## Track
-- Add hackathon track here
+GenAI.mil
 
 ## What We Built
 DraftWorks is an AI-assisted drawing compliance checker for defense/mechanical engineering workflows.
@@ -20,13 +13,21 @@ Project built during the 2026 SCSP Hackathon in Boston.
 For the MVP, users upload a drawing PDF and optional context files (CSV/TXT/JSON). The app extracts drawing text, detects core sections, compares against known context updates, and returns issues in a structured format suitable for markup or redline overlays.
 The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with OCR.
 
+Team members:
+- Emanuel
+- Sanja
+- Axel
+
 ## Datasets/APIs Used
 - User-provided engineering drawing PDFs (primary input)
 - User-provided context files (standards/spec/baseline mappings)
 - OCR engine: `rapidocr-onnxruntime` (open source)
 - PDF parser: `pymupdf`
+- Ollama Cloud API (`https://ollama.com/api/chat`)
 
 ## How to Run It
+Live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
+
 ### Prerequisites
 - Node.js 22+
 - Python 3.11+
@@ -47,31 +48,33 @@ npm run dev
 - API: `http://localhost:8000`
 
 ### Three ways to run
-1. Use our webapp + bring your own Ollama Cloud key  
-Live URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
-2a. Fork the repo + bring your own Ollama Cloud key (`Run online`)
-2b. Fork the repo + run Ollama locally on device (`Run locally on device`)
+1. Use our webapp + bring your own Ollama Cloud key
+2. Run locally + bring your own Ollama Cloud key (`Run online`)
+3. Run locally + run Ollama on-device (`Run locally on device`)
 
 ### 1) Use our webapp + bring your own Ollama Cloud key
-Web app: `https://draftworks-app.vercel.app`
+Web app: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
 
 1. Create an Ollama API key at `https://ollama.com/settings/keys`.
 2. Open the webapp and select `Run online (Ollama Cloud)`.
 3. Paste the key in `Ollama API key`.
 4. Upload drawing/context and run analysis.
 
-### 2) Fork the repo + run Ollama locally on device
+### 2) Run locally + bring your own Ollama Cloud key
+1. Start app with `npm run dev`.
+2. Open `http://localhost:5173`.
+3. In webapp select `Run online`.
+4. Paste your Ollama API key and run analysis.
+
+### 3) Run locally + run Ollama on-device
 1. Start local Ollama and pull model:
 ```bash
 ollama pull gemma4:e4b
 ```
-2. In webapp select `Run locally on device`.
-3. Upload drawing/context and run analysis.
-
-### 3) Fork the repo + bring your own Ollama Cloud key
-1. Start app with `npm run dev`.
-2. In webapp select `Run online`.
-3. Paste your Ollama API key and run analysis.
+2. Start app with `npm run dev`.
+3. Open `http://localhost:5173`.
+4. In webapp select `Run locally on device`.
+5. Upload drawing/context and run analysis.
 
 ### Hosted frontend API config (for Vercel)
 The frontend now reads `VITE_API_BASE_URL`.
