@@ -56,6 +56,12 @@ RAG_CHUNK_SIZE = max(400, int(os.getenv("RAG_CHUNK_SIZE", "1400")))
 RAG_CHUNK_OVERLAP = max(50, int(os.getenv("RAG_CHUNK_OVERLAP", "240")))
 RAG_MAX_DOCS_SCAN = max(50, int(os.getenv("RAG_MAX_DOCS_SCAN", "250")))
 RAG_MAX_CHUNKS_SCAN = max(100, int(os.getenv("RAG_MAX_CHUNKS_SCAN", "1200")))
+MAX_DRAWING_BYTES = max(1_000_000, int(os.getenv("MAX_DRAWING_BYTES", "20000000")))
+MAX_PDF_PAGES = max(1, int(os.getenv("MAX_PDF_PAGES", "6")))
+OCR_PDF_DPI = max(72, min(300, int(os.getenv("OCR_PDF_DPI", "170"))))
+OCR_MAX_IMAGE_SIDE = max(512, int(os.getenv("OCR_MAX_IMAGE_SIDE", "2200")))
+OCR_ENABLE_PREPROCESSING = os.getenv("OCR_ENABLE_PREPROCESSING", "true").lower() != "false"
+OCR_PREPROCESS_MAX_PIXELS = max(1_000_000, int(os.getenv("OCR_PREPROCESS_MAX_PIXELS", "8000000")))
 
 
 class ComplianceIssue(BaseModel):
@@ -211,6 +217,11 @@ async def analyze(
     ollama_api_key: str | None = Form(default=None),
 ) -> AnalysisResult:
     drawing_bytes = await drawing.read()
+    if len(drawing_bytes) > MAX_DRAWING_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Drawing file exceeds limit of {MAX_DRAWING_BYTES // 1_000_000} MB.",
+        )
     page_texts, ocr_low_conf_pages, page_zone_texts = extract_drawing_text(
         drawing_bytes=drawing_bytes,
         filename=drawing.filename,
@@ -296,38 +307,43 @@ def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> tuple[list[str], list[int], l
     low_conf_pages: list[int] = []
     page_zone_texts: list[dict[str, str]] = []
 
-    for i, page in enumerate(doc):
-        text = page.get_text("text") or ""
-        zone_text = extract_pdf_zone_text(page)
-        page_zone_texts.append(zone_text)
+    try:
+        for i, page in enumerate(doc):
+            if i >= MAX_PDF_PAGES:
+                break
+            text = page.get_text("text") or ""
+            zone_text = extract_pdf_zone_text(page)
+            page_zone_texts.append(zone_text)
 
-        if len(text.strip()) >= 100:
-            page_texts.append(text)
-            continue
+            if len(text.strip()) >= 100:
+                page_texts.append(text)
+                continue
 
-        if ocr_engine is None:
-            page_texts.append(text)
-            low_conf_pages.append(i + 1)
-            continue
+            if ocr_engine is None:
+                page_texts.append(text)
+                low_conf_pages.append(i + 1)
+                continue
 
-        pix = page.get_pixmap(dpi=300)
-        ocr_lines, low_conf = run_ocr_with_preprocessing(pix.tobytes("png"))
+            pix = page.get_pixmap(dpi=OCR_PDF_DPI, colorspace=fitz.csGRAY, alpha=False)
+            ocr_lines, low_conf = run_ocr_with_preprocessing(pix.tobytes("png"))
 
-        if not ocr_lines:
-            page_texts.append(text.strip())
-            low_conf_pages.append(i + 1)
-            continue
+            if not ocr_lines:
+                page_texts.append(text.strip())
+                low_conf_pages.append(i + 1)
+                continue
 
-        merged = text.strip()
-        ocr_text = "\n".join(ocr_lines)
-        if merged and ocr_text:
-            merged = f"{merged}\n{ocr_text}"
-        elif ocr_text:
-            merged = ocr_text
+            merged = text.strip()
+            ocr_text = "\n".join(ocr_lines)
+            if merged and ocr_text:
+                merged = f"{merged}\n{ocr_text}"
+            elif ocr_text:
+                merged = ocr_text
 
-        page_texts.append(merged)
-        if low_conf:
-            low_conf_pages.append(i + 1)
+            page_texts.append(merged)
+            if low_conf:
+                low_conf_pages.append(i + 1)
+    finally:
+        doc.close()
 
     return page_texts, low_conf_pages, page_zone_texts
 
@@ -389,12 +405,16 @@ def classify_zone(cx: float, cy: float) -> str | None:
 
 
 def run_ocr_with_preprocessing(image_bytes: bytes) -> tuple[list[str], bool]:
-    candidates = [image_bytes]
+    base_image = normalize_image_for_ocr(image_bytes)
+    candidates = [base_image]
 
-    if cv2 is not None and np is not None:
-        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    if OCR_ENABLE_PREPROCESSING and cv2 is not None and np is not None:
+        arr = np.frombuffer(base_image, dtype=np.uint8)
         decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if decoded is not None:
+            height, width = decoded.shape[:2]
+            if (height * width) > OCR_PREPROCESS_MAX_PIXELS:
+                decoded = resize_image_max_side(decoded, OCR_MAX_IMAGE_SIDE)
             gray = cv2.cvtColor(decoded, cv2.COLOR_BGR2GRAY)
             denoised = cv2.bilateralFilter(gray, 7, 35, 35)
             adaptive = cv2.adaptiveThreshold(
@@ -434,6 +454,32 @@ def run_ocr_with_preprocessing(image_bytes: bytes) -> tuple[list[str], bool]:
             best_low_conf = low_conf
 
     return best_lines, best_low_conf
+
+
+def normalize_image_for_ocr(image_bytes: bytes) -> bytes:
+    if cv2 is None or np is None:
+        return image_bytes
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if decoded is None:
+        return image_bytes
+
+    resized = resize_image_max_side(decoded, OCR_MAX_IMAGE_SIDE)
+    ok, encoded = cv2.imencode(".png", resized)
+    if not ok:
+        return image_bytes
+    return encoded.tobytes()
+
+
+def resize_image_max_side(image: Any, max_side: int) -> Any:
+    height, width = image.shape[:2]
+    longest = max(height, width)
+    if longest <= max_side:
+        return image
+    scale = max_side / float(longest)
+    new_w = max(1, int(width * scale))
+    new_h = max(1, int(height * scale))
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
 def normalize_ocr_output(ocr_result: list) -> tuple[list[str], float]:
