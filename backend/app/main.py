@@ -140,6 +140,15 @@ SECTION_PATTERNS = {
 STANDARD_PATTERN = re.compile(r"\b(?:ASTM|MIL-STD|ISO|SAE)[\s\-]*[A-Z0-9\-.]+\b")
 ITEM_CALLOUT_PATTERN = re.compile(r"\b(?:ITEM|ITM|BALLOON)\s*#?\s*(\d{1,3})\b", re.IGNORECASE)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ZONE_ORDER = ["title_block", "revision_block", "notes", "drawing_area"]
+ZONE_RECTS = {
+    # Normalized coordinates tuned to your sketch/template:
+    # (x0, y0, x1, y1), with x/y in [0, 1]
+    "notes": (0.0, 0.0, 0.34, 0.34),
+    "revision_block": (0.60, 0.0, 1.0, 0.26),
+    "title_block": (0.45, 0.75, 1.0, 1.0),
+    "drawing_area": (0.06, 0.12, 0.98, 0.92),
+}
 
 
 @app.get("/api/health")
@@ -202,12 +211,12 @@ async def analyze(
     ollama_api_key: str | None = Form(default=None),
 ) -> AnalysisResult:
     drawing_bytes = await drawing.read()
-    page_texts, ocr_low_conf_pages = extract_drawing_text(
+    page_texts, ocr_low_conf_pages, page_zone_texts = extract_drawing_text(
         drawing_bytes=drawing_bytes,
         filename=drawing.filename,
         content_type=drawing.content_type,
     )
-    sections = detect_sections(page_texts)
+    sections = detect_sections(page_texts, page_zone_texts)
 
     context_rules = await extract_context_rules(context_files)
     if use_foundational_context:
@@ -221,7 +230,7 @@ async def analyze(
     issues.extend(find_outdated_references(page_texts, context_rules))
     issues.extend(find_bom_view_mismatches(page_texts))
     llm_runtime = resolve_llm_runtime(inference_mode, ollama_api_key)
-    llm_issues, llm_used, llm_error = find_llm_issues(page_texts, context_rules, sections, llm_runtime)
+    llm_issues, llm_used, llm_error = find_llm_issues(page_texts, page_zone_texts, context_rules, sections, llm_runtime)
     issues.extend(llm_issues)
 
     for page in ocr_low_conf_pages:
@@ -264,7 +273,7 @@ def extract_drawing_text(
     drawing_bytes: bytes,
     filename: str | None,
     content_type: str | None,
-) -> tuple[list[str], list[int]]:
+) -> tuple[list[str], list[int], list[dict[str, str]]]:
     lower_name = (filename or "").lower()
     ext = os.path.splitext(lower_name)[1]
     ctype = (content_type or "").lower()
@@ -281,13 +290,16 @@ def extract_drawing_text(
     )
 
 
-def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> tuple[list[str], list[int]]:
+def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> tuple[list[str], list[int], list[dict[str, str]]]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page_texts: list[str] = []
     low_conf_pages: list[int] = []
+    page_zone_texts: list[dict[str, str]] = []
 
     for i, page in enumerate(doc):
         text = page.get_text("text") or ""
+        zone_text = extract_pdf_zone_text(page)
+        page_zone_texts.append(zone_text)
 
         if len(text.strip()) >= 100:
             page_texts.append(text)
@@ -317,20 +329,63 @@ def extract_pdf_text_with_ocr(pdf_bytes: bytes) -> tuple[list[str], list[int]]:
         if low_conf:
             low_conf_pages.append(i + 1)
 
-    return page_texts, low_conf_pages
+    return page_texts, low_conf_pages, page_zone_texts
 
 
-def extract_image_text_with_ocr(image_bytes: bytes) -> tuple[list[str], list[int]]:
+def extract_image_text_with_ocr(image_bytes: bytes) -> tuple[list[str], list[int], list[dict[str, str]]]:
     if ocr_engine is None:
-        return [""], [1]
+        return [""], [1], [{"drawing_area": ""}]
 
     lines, low_conf = run_ocr_with_preprocessing(image_bytes)
     extracted = "\n".join(lines).strip()
     if not extracted:
-        return [""], [1]
+        return [""], [1], [{"drawing_area": ""}]
     if low_conf:
-        return [extracted], [1]
-    return [extracted], []
+        return [extracted], [1], [{"drawing_area": extracted}]
+    return [extracted], [], [{"drawing_area": extracted}]
+
+
+def extract_pdf_zone_text(page: fitz.Page) -> dict[str, str]:
+    blocks = page.get_text("blocks")
+    width = max(1.0, float(page.rect.width))
+    height = max(1.0, float(page.rect.height))
+    bucket: dict[str, list[str]] = {zone: [] for zone in ZONE_ORDER}
+
+    for block in blocks:
+        if not isinstance(block, (list, tuple)) or len(block) < 5:
+            continue
+        text = str(block[4]).strip()
+        if not text:
+            continue
+        try:
+            x0 = float(block[0])
+            y0 = float(block[1])
+            x1 = float(block[2])
+            y1 = float(block[3])
+        except (TypeError, ValueError):
+            continue
+
+        cx = ((x0 + x1) / 2.0) / width
+        cy = ((y0 + y1) / 2.0) / height
+        zone_name = classify_zone(cx, cy)
+        if not zone_name:
+            continue
+        bucket[zone_name].append(text)
+
+    result: dict[str, str] = {}
+    for zone_name in ZONE_ORDER:
+        merged = "\n".join(bucket[zone_name]).strip()
+        if merged:
+            result[zone_name] = merged
+    return result
+
+
+def classify_zone(cx: float, cy: float) -> str | None:
+    for zone_name in ZONE_ORDER:
+        x0, y0, x1, y1 = ZONE_RECTS[zone_name]
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            return zone_name
+    return None
 
 
 def run_ocr_with_preprocessing(image_bytes: bytes) -> tuple[list[str], bool]:
@@ -406,12 +461,22 @@ def normalize_ocr_output(ocr_result: list) -> tuple[list[str], float]:
     return lines, sum(confidences) / len(confidences)
 
 
-def detect_sections(page_texts: list[str]) -> list[str]:
+def detect_sections(page_texts: list[str], page_zone_texts: list[dict[str, str]] | None = None) -> list[str]:
     found: set[str] = set()
     for text in page_texts:
         for section_name, pattern in SECTION_PATTERNS.items():
             if pattern.search(text):
                 found.add(section_name)
+    if page_zone_texts:
+        for zone_map in page_zone_texts:
+            if zone_map.get("notes"):
+                found.add("notes")
+            if zone_map.get("revision_block"):
+                found.add("revision_block")
+            if zone_map.get("title_block"):
+                found.add("title_block")
+            if zone_map.get("drawing_area"):
+                found.add("drawing_views")
     return sorted(found)
 
 
@@ -753,6 +818,7 @@ def truncate(text: str, max_len: int = 90) -> str:
 
 def find_llm_issues(
     page_texts: list[str],
+    page_zone_texts: list[dict[str, str]],
     rules: list[ContextRule],
     sections: list[str],
     llm_runtime: LlmRuntimeConfig,
@@ -762,7 +828,7 @@ def find_llm_issues(
     if llm_runtime.mode == "online" and not llm_runtime.api_key:
         return [], False, "Online mode requires an Ollama API key."
 
-    prompt = build_llm_prompt(page_texts, rules, sections)
+    prompt = build_llm_prompt(page_texts, page_zone_texts, rules, sections)
     response_text, error_message = call_ollama(prompt, llm_runtime)
     if error_message:
         return [], False, error_message
@@ -799,14 +865,30 @@ def find_llm_issues(
     return dedupe_issues(issues), True, None
 
 
-def build_llm_prompt(page_texts: list[str], rules: list[ContextRule], sections: list[str]) -> str:
+def build_llm_prompt(
+    page_texts: list[str],
+    page_zone_texts: list[dict[str, str]],
+    rules: list[ContextRule],
+    sections: list[str],
+) -> str:
     sampled_pages = []
     for idx, text in enumerate(page_texts[:4], start=1):
         sampled_pages.append(f"PAGE {idx}:\n{truncate(text, 3500)}")
 
+    zone_pages = []
+    for idx, zone_map in enumerate(page_zone_texts[:4], start=1):
+        zone_lines = [f"PAGE {idx} ZONES:"]
+        for zone_name in ["notes", "revision_block", "title_block", "drawing_area"]:
+            zone_text = zone_map.get(zone_name, "").strip()
+            if zone_text:
+                zone_lines.append(f"- {zone_name}: {truncate(zone_text, 1200)}")
+        if len(zone_lines) > 1:
+            zone_pages.append("\n".join(zone_lines))
+
     rules_text = "\n".join([f"- {rule.old_value} => {rule.new_value}" for rule in rules[:50]])
     sections_text = ", ".join(sections) if sections else "none"
     drawing_excerpt = "\n\n".join(sampled_pages)
+    zone_excerpt = "\n\n".join(zone_pages) if zone_pages else "none"
 
     return f"""
 You are a drawing compliance checker. Compare drawing content to approved context.
@@ -836,6 +918,9 @@ If there are no issues, return: {{"issues":[]}}
 Detected sections: {sections_text}
 Context rules:
 {rules_text or "- none"}
+
+Detected layout zones:
+{zone_excerpt}
 
 Drawing text:
 {drawing_excerpt}
