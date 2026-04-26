@@ -95,6 +95,7 @@ class AnalysisMeta(BaseModel):
     llm_model: str | None
     llm_endpoint: str | None
     llm_error: str | None
+    foundational_context_error: str | None
 
 
 class AnalysisResult(BaseModel):
@@ -273,10 +274,16 @@ async def analyze(
     context_payloads = await read_uploaded_context_payloads(context_files)
     context_rules = extract_context_rules_from_payloads(context_payloads)
     context_entries = extract_context_entries_from_payloads(context_payloads)
+    foundational_error: str | None = None
     if use_foundational_context:
-        query_text = " ".join(page_texts[:2])[:6000]
-        foundational_docs = retrieve_foundational_docs_for_query(query_text, limit=8)
-        context_rules.extend(extract_rules_from_foundational_docs(foundational_docs))
+        try:
+            query_text = " ".join(page_texts[:2])[:6000]
+            foundational_docs = retrieve_foundational_docs_for_query(query_text, limit=8)
+            context_rules.extend(extract_rules_from_foundational_docs(foundational_docs))
+        except HTTPException as exc:
+            foundational_error = sanitize_service_error(exc.detail, service="SurrealDB")
+        except Exception as exc:
+            foundational_error = sanitize_service_error(str(exc), service="SurrealDB")
     comparison_rows = compare_zone_rows_to_context(zone_rows, context_entries, context_rules)
     issues: list[ComplianceIssue] = []
     llm_used = False
@@ -323,6 +330,7 @@ async def analyze(
             llm_model=llm_runtime.model if OLLAMA_ENABLED else None,
             llm_endpoint=llm_runtime.url if OLLAMA_ENABLED else None,
             llm_error=llm_error,
+            foundational_context_error=foundational_error,
         ),
     )
 
@@ -778,20 +786,23 @@ def ensure_surreal_configured() -> None:
 def retrieve_foundational_docs_for_query(query: str, limit: int = 8) -> list[FoundationalDoc]:
     if not SURREAL_URL or not SURREAL_NS or not SURREAL_DB:
         return []
+    try:
+        chunks = fetch_recent_foundational_chunks(max_chunks=RAG_MAX_CHUNKS_SCAN)
+        if chunks:
+            ranked_chunks = rank_chunks_by_query(chunks, query)
+            if ranked_chunks:
+                selected = ranked_chunks[: max(4, limit * 3)]
+                return aggregate_chunks_to_docs(selected, limit=max(1, limit))
 
-    chunks = fetch_recent_foundational_chunks(max_chunks=RAG_MAX_CHUNKS_SCAN)
-    if chunks:
-        ranked_chunks = rank_chunks_by_query(chunks, query)
-        if ranked_chunks:
-            selected = ranked_chunks[: max(4, limit * 3)]
-            return aggregate_chunks_to_docs(selected, limit=max(1, limit))
+        all_docs = fetch_recent_foundational_docs(max_docs=RAG_MAX_DOCS_SCAN)
+        if not all_docs:
+            return []
 
-    all_docs = fetch_recent_foundational_docs(max_docs=RAG_MAX_DOCS_SCAN)
-    if not all_docs:
+        scored = rank_docs_by_query(all_docs, query)
+        return scored[: max(1, limit)]
+    except Exception:
+        # Analysis should continue even when Surreal retrieval is unavailable.
         return []
-
-    scored = rank_docs_by_query(all_docs, query)
-    return scored[: max(1, limit)]
 
 
 def rank_docs_by_query(docs: list[FoundationalDoc], query: str) -> list[FoundationalDoc]:
@@ -1637,7 +1648,10 @@ def surreal_query(sql: str) -> list[dict[str, Any]]:
         parsed = json.loads(body)
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(status_code=502, detail=f"SurrealDB HTTP error {exc.code}: {detail}") from exc
+        compact = compact_http_error_detail(detail)
+        if compact:
+            raise HTTPException(status_code=502, detail=f"SurrealDB HTTP error {exc.code}: {compact}") from exc
+        raise HTTPException(status_code=502, detail=f"SurrealDB HTTP error {exc.code}.") from exc
     except error.URLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach SurrealDB: {exc.reason}") from exc
     except TimeoutError as exc:
@@ -1673,9 +1687,23 @@ def parse_json_object(text: str) -> dict | None:
     match = re.search(r"\{[\s\S]*\}", stripped)
     if not match:
         return None
-
     try:
         parsed = json.loads(match.group(0))
         return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def compact_http_error_detail(raw: str, limit: int = 220) -> str:
+    if not raw:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return truncate(cleaned, max_len=limit) if cleaned else ""
+
+
+def sanitize_service_error(detail: Any, service: str) -> str:
+    text = compact_http_error_detail(str(detail), limit=180)
+    if not text:
+        return f"{service} is unavailable. Continued without foundational context."
+    return f"{service} is unavailable ({text}). Continued without foundational context."

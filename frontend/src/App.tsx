@@ -59,6 +59,7 @@ type AnalysisResult = {
     llm_model: string | null
     llm_endpoint: string | null
     llm_error: string | null
+    foundational_context_error: string | null
   }
 }
 
@@ -326,6 +327,9 @@ export function App() {
                 <span className="pill">LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
               </div>
               {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
+              {result.meta.foundational_context_error && (
+                <p className="error">Foundational context fallback: {result.meta.foundational_context_error}</p>
+              )}
 
               {result.issues.length > 0 && (
                 <div className="table-wrap">
@@ -357,39 +361,44 @@ export function App() {
                   </table>
                 </div>
               )}
+              {result.issues.length === 0 && result.comparison_rows.length === 0 && (
+                <p className="mini-note">No issues or comparison rows were detected from this run.</p>
+              )}
 
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Page</th>
-                      <th>Zone</th>
-                      <th>Object</th>
-                      <th>Drawing key</th>
-                      <th>Context key</th>
-                      <th>Found value</th>
-                      <th>Context value</th>
-                      <th>Status</th>
-                      <th>Suggested value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.comparison_rows.map((row, idx) => (
-                      <tr key={`${row.page}-${row.zone}-${row.object_key}-${idx}`}>
-                        <td>{row.page}</td>
-                        <td>{row.zone}</td>
-                        <td>{row.context_object ?? '-'}</td>
-                        <td>{row.object_key}</td>
-                        <td>{row.context_key ?? '-'}</td>
-                        <td>{row.found_value || '-'}</td>
-                        <td>{row.context_value ?? '-'}</td>
-                        <td>{row.status}</td>
-                        <td>{row.suggested_value ?? '-'}</td>
+              {result.comparison_rows.length > 0 && (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Page</th>
+                        <th>Zone</th>
+                        <th>Object</th>
+                        <th>Drawing key</th>
+                        <th>Context key</th>
+                        <th>Found value</th>
+                        <th>Context value</th>
+                        <th>Status</th>
+                        <th>Suggested value</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {result.comparison_rows.map((row, idx) => (
+                        <tr key={`${row.page}-${row.zone}-${row.object_key}-${idx}`}>
+                          <td>{row.page}</td>
+                          <td>{row.zone}</td>
+                          <td>{row.context_object ?? '-'}</td>
+                          <td>{row.object_key}</td>
+                          <td>{row.context_key ?? '-'}</td>
+                          <td>{row.found_value || '-'}</td>
+                          <td>{row.context_value ?? '-'}</td>
+                          <td>{row.status}</td>
+                          <td>{row.suggested_value ?? '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </>
           )}
         </section>
