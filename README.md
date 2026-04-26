@@ -112,6 +112,27 @@ Required Render env vars for cloud mode:
 - `OLLAMA_ENABLED` (default: `true`)
 - `OLLAMA_TIMEOUT_SECONDS` (default: `45`)
 - `OLLAMA_API_KEY` (optional server-side fallback for online mode)
+- `SURREAL_URL` (example: `http://localhost:8001` or your Surreal Cloud endpoint)
+- `SURREAL_NS` (namespace)
+- `SURREAL_DB` (database)
+- `SURREAL_USER` / `SURREAL_PASS` (optional basic auth)
+- `SURREAL_TOKEN` (optional bearer token auth)
+- `SURREAL_TABLE` (default: `foundational_context`)
+
+### SurrealDB RAG (Foundational Context)
+When `Include foundational org context` is enabled in the app, `/api/analyze` retrieves relevant foundational docs from SurrealDB and merges extracted rules into comparison.
+
+Ingest foundational context docs:
+```bash
+curl -X POST "https://draftworks-api.onrender.com/api/foundational-context/upload" \
+  -F "files=@/path/to/standards.csv" \
+  -F "files=@/path/to/spec_updates.txt"
+```
+
+Search stored foundational docs:
+```bash
+curl "https://draftworks-api.onrender.com/api/foundational-context/search?q=ASTM%20A36"
+```
 
 ## Output Schema (MVP)
 Each detected issue returns:
@@ -129,4 +150,4 @@ Each detected issue returns:
 
 ## MVP Notes
 - Drawing-view-to-BOM validation is called out in the UI and implemented as a first-pass check based on extracted item callouts.
-- Foundational org context checkbox is present in UI; SurrealDB integration can be layered next for persistent references.
+- Foundational org context checkbox is wired to SurrealDB-backed retrieval for MVP RAG.

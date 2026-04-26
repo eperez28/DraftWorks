@@ -5,8 +5,9 @@ import json
 import os
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from urllib import error, request
 
 import fitz
@@ -43,6 +44,13 @@ OLLAMA_CLOUD_MODEL = os.getenv("OLLAMA_CLOUD_MODEL", "gemma4:31b")
 OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "true").lower() != "false"
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+SURREAL_URL = os.getenv("SURREAL_URL", "").strip()
+SURREAL_NS = os.getenv("SURREAL_NS", "").strip()
+SURREAL_DB = os.getenv("SURREAL_DB", "").strip()
+SURREAL_USER = os.getenv("SURREAL_USER", "").strip()
+SURREAL_PASS = os.getenv("SURREAL_PASS", "").strip()
+SURREAL_TOKEN = os.getenv("SURREAL_TOKEN", "").strip()
+SURREAL_TABLE = os.getenv("SURREAL_TABLE", "foundational_context").strip() or "foundational_context"
 
 
 class ComplianceIssue(BaseModel):
@@ -99,6 +107,13 @@ class LlmRuntimeConfig:
     api_key: str | None
 
 
+@dataclass
+class FoundationalDoc:
+    id: str
+    source_name: str
+    content: str
+
+
 SECTION_PATTERNS = {
     "notes": re.compile(r"\bnotes?\b", re.IGNORECASE),
     "title_block": re.compile(r"\btitle\s*block\b|\bdrawing\s*title\b", re.IGNORECASE),
@@ -115,6 +130,52 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/foundational-context/upload")
+async def upload_foundational_context(
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    ensure_surreal_configured()
+    inserted = 0
+    skipped: list[str] = []
+
+    for file in files:
+        raw = await file.read()
+        content = extract_text_for_foundational_doc(raw, file.filename)
+        if not content.strip():
+            skipped.append(file.filename or "unknown")
+            continue
+
+        terms = extract_terms(content, limit=24)
+        source_name = file.filename or f"context-{inserted+1}.txt"
+        store_foundational_doc(source_name=source_name, content=content, terms=terms)
+        inserted += 1
+
+    return {
+        "stored": inserted,
+        "skipped": skipped,
+        "surreal_enabled": True,
+    }
+
+
+@app.get("/api/foundational-context/search")
+def search_foundational_context(q: str, limit: int = 5) -> dict[str, Any]:
+    ensure_surreal_configured()
+    capped_limit = max(1, min(limit, 20))
+    docs = retrieve_foundational_docs_for_query(q, limit=capped_limit)
+    return {
+        "query": q,
+        "count": len(docs),
+        "results": [
+            {
+                "id": doc.id,
+                "source_name": doc.source_name,
+                "snippet": truncate(doc.content, 220),
+            }
+            for doc in docs
+        ],
+    }
 
 
 @app.post("/api/analyze", response_model=AnalysisResult)
@@ -134,6 +195,10 @@ async def analyze(
     sections = detect_sections(page_texts)
 
     context_rules = await extract_context_rules(context_files)
+    if use_foundational_context:
+        query_text = " ".join(page_texts[:2])[:6000]
+        foundational_docs = retrieve_foundational_docs_for_query(query_text, limit=8)
+        context_rules.extend(extract_rules_from_foundational_docs(foundational_docs))
     issues: list[ComplianceIssue] = []
     llm_used = False
     llm_error: str | None = None
@@ -350,6 +415,100 @@ async def extract_context_rules(files: list[UploadFile]) -> list[ContextRule]:
             rules.extend(parse_txt_rules(data))
 
     return rules
+
+
+def extract_rules_from_foundational_docs(docs: list[FoundationalDoc]) -> list[ContextRule]:
+    rules: list[ContextRule] = []
+    for doc in docs:
+        lowered = doc.source_name.lower()
+        payload = doc.content.encode("utf-8", errors="ignore")
+        try:
+            if lowered.endswith(".csv"):
+                rules.extend(parse_csv_rules(payload))
+            elif lowered.endswith(".json"):
+                rules.extend(parse_json_rules(payload))
+            else:
+                rules.extend(parse_txt_rules(payload))
+        except Exception:
+            continue
+
+    return rules
+
+
+def extract_text_for_foundational_doc(raw: bytes, filename: str | None) -> str:
+    lowered = (filename or "").lower()
+    try:
+        if lowered.endswith(".csv") or lowered.endswith(".txt") or lowered.endswith(".json"):
+            return raw.decode("utf-8", errors="ignore")
+        return raw.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def ensure_surreal_configured() -> None:
+    if not SURREAL_URL or not SURREAL_NS or not SURREAL_DB:
+        raise HTTPException(
+            status_code=503,
+            detail="SurrealDB is not configured. Set SURREAL_URL, SURREAL_NS, and SURREAL_DB.",
+        )
+
+
+def retrieve_foundational_docs_for_query(query: str, limit: int = 8) -> list[FoundationalDoc]:
+    if not SURREAL_URL or not SURREAL_NS or not SURREAL_DB:
+        return []
+
+    all_docs = fetch_recent_foundational_docs(max_docs=250)
+    if not all_docs:
+        return []
+
+    scored = rank_docs_by_query(all_docs, query)
+    return scored[: max(1, limit)]
+
+
+def rank_docs_by_query(docs: list[FoundationalDoc], query: str) -> list[FoundationalDoc]:
+    terms = extract_terms(query, limit=24)
+    if not terms:
+        return docs[:8]
+
+    scored: list[tuple[float, FoundationalDoc]] = []
+    for doc in docs:
+        text = doc.content.lower()
+        overlap = 0
+        for term in terms:
+            if term in text:
+                overlap += 1
+        if overlap == 0:
+            continue
+        density = overlap / max(1, len(terms))
+        scored.append((density, doc))
+
+    scored.sort(key=lambda row: row[0], reverse=True)
+    if not scored:
+        return docs[:8]
+    return [doc for _, doc in scored]
+
+
+def extract_terms(text: str, limit: int = 20) -> list[str]:
+    candidates = re.findall(r"\b[A-Za-z0-9][A-Za-z0-9\-_/.]{2,}\b", text.lower())
+    stop_words = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "into",
+        "notes",
+        "page",
+        "drawing",
+        "context",
+        "item",
+    }
+    filtered = [token for token in candidates if token not in stop_words]
+    counts = Counter(filtered)
+    most_common = [token for token, _ in counts.most_common(limit)]
+    return most_common
 
 
 def parse_csv_rules(data: bytes) -> list[ContextRule]:
@@ -649,6 +808,105 @@ def call_ollama(prompt: str, llm_runtime: LlmRuntimeConfig) -> tuple[str, str | 
         return "", f"Ollama timed out after {OLLAMA_TIMEOUT_SECONDS:.0f}s."
     except Exception as exc:
         return "", f"Ollama call failed: {exc}"
+
+
+def store_foundational_doc(source_name: str, content: str, terms: list[str]) -> None:
+    escaped_source = sql_quote(source_name)
+    escaped_content = sql_quote(content)
+    terms_sql = ", ".join(sql_quote(term) for term in terms)
+    query = (
+        f"CREATE {SURREAL_TABLE} SET "
+        f"source_name = {escaped_source}, "
+        f"content = {escaped_content}, "
+        f"terms = [{terms_sql}], "
+        f"created_at = time::now();"
+    )
+    surreal_query(query)
+
+
+def fetch_recent_foundational_docs(max_docs: int = 250) -> list[FoundationalDoc]:
+    query = (
+        f"SELECT id, source_name, content "
+        f"FROM {SURREAL_TABLE} "
+        f"ORDER BY created_at DESC "
+        f"LIMIT {max(1, min(max_docs, 500))};"
+    )
+    payload = surreal_query(query)
+    rows = payload[0].get("result", []) if payload else []
+    docs: list[FoundationalDoc] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        docs.append(
+            FoundationalDoc(
+                id=str(row.get("id", "")),
+                source_name=str(row.get("source_name", "unknown")),
+                content=str(row.get("content", "")),
+            )
+        )
+    return docs
+
+
+def surreal_query(sql: str) -> list[dict[str, Any]]:
+    base = SURREAL_URL.rstrip("/")
+    if not base:
+        raise HTTPException(status_code=503, detail="SurrealDB URL is not configured.")
+
+    if base.endswith("/sql"):
+        url = base
+    elif base.endswith("/rpc"):
+        url = base[:-4] + "/sql"
+    else:
+        url = base + "/sql"
+
+    headers = {
+        "Content-Type": "text/plain",
+        "Accept": "application/json",
+        "NS": SURREAL_NS,
+        "DB": SURREAL_DB,
+    }
+
+    if SURREAL_TOKEN:
+        headers["Authorization"] = f"Bearer {SURREAL_TOKEN}"
+    elif SURREAL_USER and SURREAL_PASS:
+        credentials = f"{SURREAL_USER}:{SURREAL_PASS}".encode("utf-8")
+        token = base64_encode(credentials)
+        headers["Authorization"] = f"Basic {token}"
+
+    req = request.Request(
+        url,
+        method="POST",
+        headers=headers,
+        data=sql.encode("utf-8"),
+    )
+    try:
+        with request.urlopen(req, timeout=20) as resp:
+            body = resp.read().decode("utf-8")
+        parsed = json.loads(body)
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=502, detail=f"SurrealDB HTTP error {exc.code}: {detail}") from exc
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach SurrealDB: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="SurrealDB request timed out.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"SurrealDB query failed: {exc}") from exc
+
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=500, detail="Unexpected SurrealDB response format.")
+    return [row for row in parsed if isinstance(row, dict)]
+
+
+def base64_encode(raw: bytes) -> str:
+    import base64
+
+    return base64.b64encode(raw).decode("ascii")
+
+
+def sql_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
 
 
 def parse_json_object(text: str) -> dict | None:
