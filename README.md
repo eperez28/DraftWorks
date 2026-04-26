@@ -28,27 +28,6 @@ The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with
 - Vercel (hosts frontend web app): `https://draftworks-app.vercel.app`
 
 ## How to Run It
-Live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
-
-### Prerequisites
-- Node.js 22+
-- Python 3.11+
-
-### Install
-```bash
-npm install
-npm --prefix frontend install
-python3 -m pip install -r backend/requirements.txt
-```
-
-### Start locally (single command)
-```bash
-npm run dev
-```
-
-- Frontend: `http://localhost:5173`
-- API: `http://localhost:8000`
-
 ### A) Run Live (fastest)
 1. Go to live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
 2. Get Ollama API key:
@@ -62,21 +41,39 @@ npm run dev
 6. Sample documents: `<add Google Drive link here>`
 
 ### B) Run Locally + Ollama Cloud Key
-1. Start app with `npm run dev`
-2. Open `http://localhost:5173`
-3. Select `Run online`
-4. Paste your Ollama API key
-5. Upload drawing/context and click `Compare`
+1. Install dependencies:
+```bash
+npm install
+npm --prefix frontend install
+python3 -m pip install -r backend/requirements.txt
+```
+2. Start app:
+```bash
+npm run dev
+```
+3. Open `http://localhost:5173`
+4. Select `Run online`
+5. Paste your Ollama API key
+6. Upload drawing/context and click `Compare`
 
 ### C) Run Locally + Ollama on Device
-1. Start local Ollama and pull model:
+1. Install dependencies:
+```bash
+npm install
+npm --prefix frontend install
+python3 -m pip install -r backend/requirements.txt
+```
+2. Start local Ollama and pull model:
 ```bash
 ollama pull gemma4:e4b
 ```
-2. Start app with `npm run dev`.
-3. Open `http://localhost:5173`.
-4. In webapp select `Run locally on device`.
-5. Upload drawing/context and run analysis.
+3. Start app:
+```bash
+npm run dev
+```
+4. Open `http://localhost:5173`
+5. Select `Run locally on device`
+6. Upload drawing/context and run analysis
 
 ### Hosted frontend API config (for Vercel)
 The frontend now reads `VITE_API_BASE_URL`.
