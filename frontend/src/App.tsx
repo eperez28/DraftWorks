@@ -214,7 +214,14 @@ export function App() {
                       ? `${contextFiles.length} file${contextFiles.length === 1 ? '' : 's'} selected`
                       : 'No files selected'}
                   </span>
-                  <input ref={contextInputRef} className="visually-hidden-input" type="file" multiple onChange={onContextChange} />
+                  <input
+                    ref={contextInputRef}
+                    className="visually-hidden-input"
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={onContextChange}
+                  />
                 </div>
               </label>
 
