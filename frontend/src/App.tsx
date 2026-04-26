@@ -42,7 +42,6 @@ type AnalysisResult = {
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || 'http://localhost:8000'
 
 export function App() {
-  const analyzerRef = useRef<HTMLElement | null>(null)
   const resultsRef = useRef<HTMLElement | null>(null)
   const [drawing, setDrawing] = useState<File | null>(null)
   const [contextFiles, setContextFiles] = useState<File[]>([])
@@ -71,10 +70,6 @@ export function App() {
   const onContextChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
     setContextFiles(files)
-  }
-
-  const scrollToAnalyzer = () => {
-    analyzerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   const onSubmit = async (event: FormEvent) => {
@@ -122,57 +117,27 @@ export function App() {
   }
 
   return (
-    <main className="site-shell">
-      <section className="hero-wrap">
-        <div className="hero-inner">
-          <h1>DraftWorks</h1>
-          <p>
-            Automatically validate engineering drawings against current standards and catch errors before they
-            trigger costly rework and delays.
-          </p>
-          <button className="hero-btn" onClick={scrollToAnalyzer}>Try Sample</button>
+    <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">DraftWorks</p>
+          <h1>Drawing Compliance Workbench</h1>
         </div>
-      </section>
-
-      <section className="content-wrap split-block">
-        <h2>Manual drawing review is slow and error prone</h2>
-        <div className="stack-cards">
-          <article>
-            <h3>Explain the idea</h3>
-            <p>State what changed, where it changed, and what should replace it.</p>
-          </article>
-          <article>
-            <h3>In small parts</h3>
-            <p>Break checks into standards, specs, materials, and BOM consistency.</p>
-          </article>
-          <article>
-            <h3>With more detail</h3>
-            <p>Attach evidence and expected values so reviewers trust each flagged issue.</p>
-          </article>
+        <div className="status-chips">
+          <span className="pill">Mode: {inferenceMode}</span>
+          <span className="pill">Context files: {contextFiles.length}</span>
+          <span className="pill">Drawing: {drawing?.name ?? 'none'}</span>
         </div>
-      </section>
+      </header>
 
-      <section className="content-wrap panel-grid" ref={analyzerRef}>
-        <article className="panel">
-          <h3>Manual drawing review is slow and error prone</h3>
-          <ul>
-            <li>Engineers manually cross-check drawings against standards, specs, and BOMs.</li>
-            <li>Small inconsistencies lead to costly review cycles and production delays.</li>
-            <li>Updates across materials and parts are difficult to track.</li>
-          </ul>
-        </article>
-
-        <article className="panel">
-          <h3>How it works</h3>
-          <ol>
-            <li>Upload drawing (PDF/image)</li>
-            <li>Upload context</li>
-            <li>Compare and review issues</li>
-          </ol>
+      <section className="app-workspace">
+        <aside className="control-panel">
+          <h2>Run Analysis</h2>
+          <p>Upload the drawing first, then compare against your reference context.</p>
 
           <form onSubmit={onSubmit} className="form-grid">
             <fieldset className="mode-switch" aria-label="Inference mode">
-              <legend>Run mode</legend>
+              <legend>Inference mode</legend>
               <label className="inline">
                 <input
                   type="radio"
@@ -180,7 +145,7 @@ export function App() {
                   checked={inferenceMode === 'online'}
                   onChange={() => setInferenceMode('online')}
                 />
-                Run online
+                Run online (Ollama Cloud)
               </label>
               <label className="inline">
                 <input
@@ -221,67 +186,66 @@ export function App() {
                 checked={useFoundational}
                 onChange={(event) => setUseFoundational(event.target.checked)}
               />
-              Include foundational org context
+              Include foundational org context (SurrealDB)
             </label>
 
             <button type="submit" disabled={isLoading}>{isLoading ? 'Analyzing…' : 'Compare'}</button>
           </form>
 
           {error && <p className="error">{error}</p>}
-        </article>
+        </aside>
 
-        <article className="panel">
-          <h3>What DraftWorks does</h3>
-          <ul>
-            <li>Detect outdated standards and specification references.</li>
-            <li>Validate material and coating compatibility.</li>
-            <li>Flag required updates directly for engineering review.</li>
-          </ul>
-        </article>
-      </section>
-
-      {result && (
-        <section className="content-wrap results-wrap" ref={resultsRef}>
-          <h2>Results</h2>
-          <p>{result.summary}</p>
-          <div className="kpis">
-            <span className="pill">Total issues: {result.issues.length}</span>
-            <span className="pill">High/Critical: {severeCount}</span>
-            <span className="pill">Sections: {result.sections_detected.join(', ') || 'none'}</span>
-            <span className="pill">Mode: {result.meta.inference_mode}</span>
-            <span className="pill">LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
+        <section className="results-panel" ref={resultsRef}>
+          <div className="results-head">
+            <h2>Results</h2>
+            {result && <p>{result.summary}</p>}
+            {!result && <p>Run a comparison to generate compliance findings.</p>}
           </div>
-          {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
 
-          <table>
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th>Severity</th>
-                <th>Page</th>
-                <th>Section</th>
-                <th>Evidence</th>
-                <th>Expected</th>
-                <th>Found</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.issues.map((issue) => (
-                <tr key={issue.id}>
-                  <td>{issue.issue_type}</td>
-                  <td>{issue.severity}</td>
-                  <td>{issue.page ?? '-'}</td>
-                  <td>{issue.section}</td>
-                  <td>{issue.evidence}</td>
-                  <td>{issue.expected_value ?? '-'}</td>
-                  <td>{issue.found_value ?? '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {result && (
+            <>
+              <div className="kpis">
+                <span className="pill">Total issues: {result.issues.length}</span>
+                <span className="pill">High/Critical: {severeCount}</span>
+                <span className="pill">Sections: {result.sections_detected.join(', ') || 'none'}</span>
+                <span className="pill">
+                  LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}
+                </span>
+              </div>
+              {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Severity</th>
+                      <th>Page</th>
+                      <th>Section</th>
+                      <th>Evidence</th>
+                      <th>Expected</th>
+                      <th>Found</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.issues.map((issue) => (
+                      <tr key={issue.id}>
+                        <td>{issue.issue_type}</td>
+                        <td>{issue.severity}</td>
+                        <td>{issue.page ?? '-'}</td>
+                        <td>{issue.section}</td>
+                        <td>{issue.evidence}</td>
+                        <td>{issue.expected_value ?? '-'}</td>
+                        <td>{issue.found_value ?? '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </section>
-      )}
-
+      </section>
     </main>
   )
 }

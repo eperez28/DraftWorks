@@ -701,7 +701,7 @@ def find_llm_issues(
         except Exception:
             continue
 
-    return dedupe_issues(issues), len(issues) > 0, None
+    return dedupe_issues(issues), True, None
 
 
 def build_llm_prompt(page_texts: list[str], rules: list[ContextRule], sections: list[str]) -> str:
