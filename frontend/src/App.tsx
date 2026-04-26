@@ -40,6 +40,13 @@ type ComparisonRow = {
   notes: string
 }
 
+type RawComparisonRow = Partial<ComparisonRow> & {
+  page?: number
+  found_value?: string
+  suggested_value?: string | null
+  status?: string
+}
+
 type AnalysisResult = {
   run_id: string
   summary: string
@@ -153,11 +160,30 @@ export function App() {
       }
 
       const data = (await response.json()) as AnalysisResult
-      setResult(data)
+      const normalizedRows = (data.comparison_rows as RawComparisonRow[]).map((row) => normalizeComparisonRow(row))
+      setResult({ ...data, comparison_rows: normalizedRows })
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Unknown error')
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const normalizeComparisonRow = (row: RawComparisonRow): ComparisonRow => {
+    const existing = String(row.existing_text ?? row.found_value ?? '').trim()
+    const replace = String(row.replace_with ?? row.suggested_value ?? '').trim()
+    const status = String(row.status ?? '').trim().toLowerCase()
+    const isLikelyChange = !!replace && replace !== '-' && !['no change', 'no change recommended'].includes(replace.toLowerCase())
+
+    return {
+      sheet: Number(row.sheet ?? row.page ?? 0) || 0,
+      zone: String(row.zone ?? '').trim(),
+      existing_text: existing,
+      replace_with: replace || (status === 'no_context' ? 'NO CHANGE RECOMMENDED' : 'NO CHANGE'),
+      change_type: String(row.change_type ?? (isLikelyChange ? 'Value Update' : 'Review Only')).trim(),
+      source_basis: String(row.source_basis ?? (status === 'no_context' ? 'No governing source found' : 'Context comparison')).trim(),
+      priority: String(row.priority ?? (isLikelyChange ? 'High' : '—')).trim(),
+      notes: String(row.notes ?? '').trim(),
     }
   }
 
