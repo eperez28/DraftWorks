@@ -24,6 +24,8 @@ The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with
 - OCR engine: `rapidocr-onnxruntime` (open source)
 - PDF parser: `pymupdf`
 - Ollama Cloud API (`https://ollama.com/api/chat`)
+- Render Web Service (hosts FastAPI backend): `https://draftworks-api.onrender.com`
+- Vercel (hosts frontend web app): `https://draftworks-app.vercel.app`
 
 ## How to Run It
 Live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
