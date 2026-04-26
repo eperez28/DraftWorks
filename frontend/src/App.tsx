@@ -166,7 +166,8 @@ export function App() {
 
       const data = (await response.json()) as AnalysisResult
       const normalizedRows = (data.comparison_rows as RawComparisonRow[]).map((row) => normalizeComparisonRow(row))
-      setResult({ ...data, comparison_rows: normalizedRows })
+      const filteredRows = normalizedRows.filter((row) => !isCapitalizationOnlyReplacement(row))
+      setResult({ ...data, comparison_rows: filteredRows })
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Unknown error')
     } finally {
@@ -294,6 +295,16 @@ export function App() {
       notes: String(row.notes ?? '').trim(),
     }
   }
+
+  const isCapitalizationOnlyReplacement = (row: ComparisonRow): boolean => {
+    const from = row.existing_text.trim()
+    const to = row.replace_with.trim()
+    if (!from || !to) return false
+    if (from === to) return false
+    return normalizeForCaseCompare(from) === normalizeForCaseCompare(to)
+  }
+
+  const normalizeForCaseCompare = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim()
 
   return (
     <main className="app-shell">
@@ -479,7 +490,7 @@ export function App() {
                 <div className="kpis">
                   <button
                     type="button"
-                    className="chip-btn"
+                    className="chip-btn table-view-btn"
                     onClick={() => setTableView('differences')}
                     disabled={tableView === 'differences'}
                   >
@@ -487,7 +498,7 @@ export function App() {
                   </button>
                   <button
                     type="button"
-                    className="chip-btn"
+                    className="chip-btn table-view-btn"
                     onClick={() => setTableView('parsed')}
                     disabled={tableView === 'parsed'}
                   >
