@@ -70,6 +70,7 @@ type CloudKeySource = 'app' | 'byok'
 
 export function App() {
   const resultsRef = useRef<HTMLElement | null>(null)
+  const contextInputRef = useRef<HTMLInputElement | null>(null)
   const [drawing, setDrawing] = useState<File | null>(null)
   const [contextFiles, setContextFiles] = useState<File[]>([])
   const [useFoundational, setUseFoundational] = useState(true)
@@ -106,6 +107,10 @@ export function App() {
       return Array.from(map.values())
     })
     event.target.value = ''
+  }
+
+  const openContextPicker = () => {
+    contextInputRef.current?.click()
   }
 
   const removeContextFile = (target: File) => {
@@ -200,7 +205,17 @@ export function App() {
 
               <label>
                 Context files (multi-select supported)
-                <input type="file" multiple onChange={onContextChange} />
+                <div className="file-picker">
+                  <button type="button" className="file-picker-btn" onClick={openContextPicker}>
+                    Choose Files
+                  </button>
+                  <span className="file-picker-status">
+                    {contextFiles.length > 0
+                      ? `${contextFiles.length} file${contextFiles.length === 1 ? '' : 's'} selected`
+                      : 'No files selected'}
+                  </span>
+                  <input ref={contextInputRef} className="visually-hidden-input" type="file" multiple onChange={onContextChange} />
+                </div>
               </label>
 
               {contextFiles.length > 0 && (
