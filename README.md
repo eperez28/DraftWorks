@@ -84,6 +84,23 @@ VITE_API_BASE_URL=http://localhost:8000
 For hosted usage, set `VITE_API_BASE_URL` in Vercel project settings to your deployed backend URL.
 Reference file: `frontend/.env.example`
 
+### Deploy backend on Render
+This repo includes a Render Blueprint at `render.yaml`.
+
+1. In Render, click `New +` -> `Blueprint`.
+2. Connect this GitHub repo.
+3. Render will detect `render.yaml` and create `draftworks-api`.
+4. After deploy, copy your backend URL, for example: `https://draftworks-api.onrender.com`.
+5. In Vercel (`draftworks-app` project), set:
+   - `VITE_API_BASE_URL=https://YOUR-RENDER-URL`
+6. Redeploy frontend on Vercel.
+
+Required Render env vars for cloud mode:
+- `OLLAMA_ENABLED=true`
+- `OLLAMA_CLOUD_URL=https://ollama.com/api/chat`
+- `OLLAMA_CLOUD_MODEL=gemma4:31b`
+- `OLLAMA_TIMEOUT_SECONDS=45`
+
 ### Optional backend env vars
 - `OLLAMA_LOCAL_URL` (default: `http://localhost:11434/api/chat`)
 - `OLLAMA_CLOUD_URL` (default: `https://ollama.com/api/chat`)
