@@ -31,13 +31,9 @@ The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with
 ## How to Run It
 ### A) Run Live (fastest)
 1. Go to live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
-2. Get Ollama API key:
-   1. Open [https://ollama.com/settings/keys](https://ollama.com/settings/keys)
-   2. Sign in to your Ollama account
-   3. Click `Create key`
-   4. Copy the generated key
-3. In the web app, select `Run online`
-4. Paste your key into `Ollama API key`
+2. In the web app, select `Run online`
+3. By default, use `Use app key` (server-managed key on Render). No key needed for normal use.
+4. Optional: switch to `Bring your own key (BYOK)` and paste your own Ollama key.
 5. Upload drawing and context files, then click `Compare`
 6. Sample documents: `<add Google Drive link here>`
 
@@ -53,9 +49,14 @@ python3 -m pip install -r backend/requirements.txt
 npm run dev
 ```
 3. Open `http://localhost:5173`
-4. Select `Run online`
-5. Paste your Ollama API key
-6. Upload drawing/context and click `Compare`
+4. Get an Ollama API key:
+   1. Open [https://ollama.com/settings/keys](https://ollama.com/settings/keys)
+   2. Sign in to your Ollama account
+   3. Click `Create key`
+   4. Copy the generated key
+5. Select `Run online`
+6. Choose `Bring your own key (BYOK)` and paste the key
+7. Upload drawing/context and click `Compare`
 
 ### C) Run Locally + Ollama on Device
 1. Install dependencies:
@@ -74,7 +75,7 @@ npm run dev
 ```
 4. Open `http://localhost:5173`
 5. Select `Run locally on device`
-6. Upload drawing/context and run analysis
+6. Upload drawing/context and run analysis (no Ollama Cloud key required)
 
 ### Hosted frontend API config (for Vercel)
 The frontend now reads `VITE_API_BASE_URL`.
@@ -111,7 +112,7 @@ Required Render env vars for cloud mode:
 - `OLLAMA_CLOUD_MODEL` (default: `gemma4:31b`)
 - `OLLAMA_ENABLED` (default: `true`)
 - `OLLAMA_TIMEOUT_SECONDS` (default: `45`)
-- `OLLAMA_API_KEY` (optional server-side fallback for online mode)
+- `OLLAMA_API_KEY` (server-side key used by default in online mode; users can still override via BYOK)
 - `SURREAL_URL` (example: `http://localhost:8001` or your Surreal Cloud endpoint)
 - `SURREAL_NS` (namespace)
 - `SURREAL_DB` (database)
