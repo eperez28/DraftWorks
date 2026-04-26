@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 
 type Severity = 'low' | 'medium' | 'high' | 'critical'
 
@@ -43,6 +43,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.
 
 export function App() {
   const analyzerRef = useRef<HTMLElement | null>(null)
+  const resultsRef = useRef<HTMLElement | null>(null)
   const [drawing, setDrawing] = useState<File | null>(null)
   const [contextFiles, setContextFiles] = useState<File[]>([])
   const [useFoundational, setUseFoundational] = useState(false)
@@ -55,6 +56,11 @@ export function App() {
   const severeCount = useMemo(() => {
     if (!result) return 0
     return result.issues.filter((i) => i.severity === 'high' || i.severity === 'critical').length
+  }, [result])
+
+  useEffect(() => {
+    if (!result) return
+    resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [result])
 
   const onDrawingChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -235,7 +241,7 @@ export function App() {
       </section>
 
       {result && (
-        <section className="content-wrap results-wrap">
+        <section className="content-wrap results-wrap" ref={resultsRef}>
           <h2>Results</h2>
           <p>{result.summary}</p>
           <div className="kpis">
