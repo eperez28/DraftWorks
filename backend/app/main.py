@@ -781,10 +781,17 @@ def ensure_surreal_configured() -> None:
             status_code=503,
             detail="SurrealDB is not configured. Set SURREAL_URL, SURREAL_NS, and SURREAL_DB.",
         )
+    if not surreal_auth_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="SurrealDB auth is not configured. Set SURREAL_TOKEN or SURREAL_USER/SURREAL_PASS.",
+        )
 
 
 def retrieve_foundational_docs_for_query(query: str, limit: int = 8) -> list[FoundationalDoc]:
     if not SURREAL_URL or not SURREAL_NS or not SURREAL_DB:
+        return []
+    if not surreal_auth_configured():
         return []
     try:
         chunks = fetch_recent_foundational_chunks(max_chunks=RAG_MAX_CHUNKS_SCAN)
@@ -1648,6 +1655,11 @@ def surreal_query(sql: str) -> list[dict[str, Any]]:
         parsed = json.loads(body)
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
+        if exc.code in (401, 403):
+            raise HTTPException(
+                status_code=503,
+                detail="SurrealDB authentication/permissions failed. Check SURREAL_TOKEN or SURREAL_USER/SURREAL_PASS permissions.",
+            ) from exc
         compact = compact_http_error_detail(detail)
         if compact:
             raise HTTPException(status_code=502, detail=f"SurrealDB HTTP error {exc.code}: {compact}") from exc
@@ -1707,3 +1719,7 @@ def sanitize_service_error(detail: Any, service: str) -> str:
     if not text:
         return f"{service} is unavailable. Continued without foundational context."
     return f"{service} is unavailable ({text}). Continued without foundational context."
+
+
+def surreal_auth_configured() -> bool:
+    return bool(SURREAL_TOKEN or (SURREAL_USER and SURREAL_PASS))
