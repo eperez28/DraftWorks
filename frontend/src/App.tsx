@@ -58,7 +58,7 @@ export function App() {
   const resultsRef = useRef<HTMLElement | null>(null)
   const [drawing, setDrawing] = useState<File | null>(null)
   const [contextFiles, setContextFiles] = useState<File[]>([])
-  const [useFoundational, setUseFoundational] = useState(false)
+  const [useFoundational, setUseFoundational] = useState(true)
   const [inferenceMode, setInferenceMode] = useState<'online' | 'local'>('online')
   const [inferenceOpen, setInferenceOpen] = useState(false)
   const [cloudKeySource, setCloudKeySource] = useState<CloudKeySource>('app')
@@ -209,20 +209,21 @@ export function App() {
                 </ul>
               )}
 
-              <label className="inline checkbox-line">
-                <input
-                  type="checkbox"
-                  checked={useFoundational}
-                  onChange={(event) => setUseFoundational(event.target.checked)}
-                />
-                Include foundational org context (SurrealDB)
-              </label>
             </section>
 
             {inferenceOpen && (
               <section className="setting-card settings-card">
                 <h3>Settings (Optional)</h3>
                 <div className="stack">
+                  <label className="inline checkbox-line">
+                    <input
+                      type="checkbox"
+                      checked={useFoundational}
+                      onChange={(event) => setUseFoundational(event.target.checked)}
+                    />
+                    Include foundational org context (SurrealDB)
+                  </label>
+
                   <fieldset className="mode-switch" aria-label="Inference mode">
                     <legend>Inference mode</legend>
                     <label className="inline">
