@@ -5,10 +5,12 @@ import json
 import os
 import re
 import uuid
+import zipfile
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib import error, request
+from xml.etree import ElementTree as ET
 
 import fitz
 import pandas as pd
@@ -118,15 +120,15 @@ class ZoneItemRow(BaseModel):
 
 
 class ComparisonRow(BaseModel):
-    page: int
+    sheet: int
     zone: str
-    object_key: str
-    found_value: str
-    context_object: str | None
-    context_key: str | None
-    context_value: str | None
-    status: Literal["match", "mismatch", "rule_mismatch", "no_context"]
-    suggested_value: str | None
+    existing_text: str
+    replace_with: str
+    change_type: str
+    source_basis: str
+    priority: str
+    notes: str
+    status: Literal["change", "review_only", "unsure"] = "unsure"
 
 
 class ZoneExtractResult(BaseModel):
@@ -141,6 +143,8 @@ class ZoneExtractResult(BaseModel):
 class ContextRule:
     old_value: str
     new_value: str
+    source_name: str | None = None
+    source_ref: str | None = None
 
 
 @dataclass
@@ -148,6 +152,8 @@ class ContextEntry:
     object_name: str | None
     key: str
     value: str
+    source_name: str | None = None
+    source_ref: str | None = None
 
 
 @dataclass
@@ -274,6 +280,7 @@ async def analyze(
     context_payloads = await read_uploaded_context_payloads(context_files)
     context_rules = extract_context_rules_from_payloads(context_payloads)
     context_entries = extract_context_entries_from_payloads(context_payloads)
+    context_sources = sorted({name for name, _ in context_payloads if name})
     foundational_error: str | None = None
     if use_foundational_context:
         try:
@@ -284,16 +291,23 @@ async def analyze(
             foundational_error = sanitize_service_error(exc.detail, service="SurrealDB")
         except Exception as exc:
             foundational_error = sanitize_service_error(str(exc), service="SurrealDB")
-    comparison_rows = compare_zone_rows_to_context(zone_rows, context_entries, context_rules)
+    llm_runtime = resolve_llm_runtime(inference_mode, ollama_api_key)
+    llm_rows, llm_used, llm_error = find_llm_change_rows(
+        page_texts=page_texts,
+        page_zone_texts=page_zone_texts,
+        context_rules=context_rules,
+        context_entries=context_entries,
+        context_payloads=context_payloads,
+        sections=sections,
+        llm_runtime=llm_runtime,
+        context_sources=context_sources,
+    )
+    fallback_rows = compare_zone_rows_to_context(zone_rows, context_entries, context_rules)
+    comparison_rows = filter_rows_for_display(llm_rows if llm_rows else fallback_rows)
     issues: list[ComplianceIssue] = []
-    llm_used = False
-    llm_error: str | None = None
 
     issues.extend(find_outdated_references(page_texts, context_rules))
     issues.extend(find_bom_view_mismatches(page_texts))
-    llm_runtime = resolve_llm_runtime(inference_mode, ollama_api_key)
-    llm_issues, llm_used, llm_error = find_llm_issues(page_texts, page_zone_texts, context_rules, sections, llm_runtime)
-    issues.extend(llm_issues)
 
     for page in ocr_low_conf_pages:
         issues.append(
@@ -723,11 +737,15 @@ def extract_context_rules_from_payloads(payloads: list[tuple[str, bytes]]) -> li
     for filename, data in payloads:
         lower_name = filename.lower()
         if lower_name.endswith(".csv"):
-            rules.extend(parse_csv_rules(data))
+            rules.extend(parse_csv_rules(data, source_name=filename))
+        elif lower_name.endswith(".xlsx"):
+            rules.extend(parse_xlsx_rules(data, source_name=filename))
         elif lower_name.endswith(".json"):
-            rules.extend(parse_json_rules(data))
+            rules.extend(parse_json_rules(data, source_name=filename))
+        elif lower_name.endswith(".docx"):
+            rules.extend(parse_docx_rules(data, source_name=filename))
         elif lower_name.endswith(".txt"):
-            rules.extend(parse_txt_rules(data))
+            rules.extend(parse_txt_rules(data, source_name=filename))
     return rules
 
 
@@ -737,11 +755,15 @@ def extract_context_entries_from_payloads(payloads: list[tuple[str, bytes]]) -> 
         lower_name = filename.lower()
         try:
             if lower_name.endswith(".csv"):
-                entries.extend(parse_csv_context_entries(data))
+                entries.extend(parse_csv_context_entries(data, source_name=filename))
+            elif lower_name.endswith(".xlsx"):
+                entries.extend(parse_xlsx_context_entries(data, source_name=filename))
             elif lower_name.endswith(".json"):
-                entries.extend(parse_json_context_entries(data))
+                entries.extend(parse_json_context_entries(data, source_name=filename))
+            elif lower_name.endswith(".docx"):
+                entries.extend(parse_docx_context_entries(data, source_name=filename))
             elif lower_name.endswith(".txt"):
-                entries.extend(parse_txt_context_entries(data))
+                entries.extend(parse_txt_context_entries(data, source_name=filename))
         except Exception:
             continue
     return dedupe_context_entries(entries)
@@ -754,11 +776,15 @@ def extract_rules_from_foundational_docs(docs: list[FoundationalDoc]) -> list[Co
         payload = doc.content.encode("utf-8", errors="ignore")
         try:
             if lowered.endswith(".csv"):
-                rules.extend(parse_csv_rules(payload))
+                rules.extend(parse_csv_rules(payload, source_name=doc.source_name))
+            elif lowered.endswith(".xlsx"):
+                rules.extend(parse_xlsx_rules(payload, source_name=doc.source_name))
             elif lowered.endswith(".json"):
-                rules.extend(parse_json_rules(payload))
+                rules.extend(parse_json_rules(payload, source_name=doc.source_name))
+            elif lowered.endswith(".docx"):
+                rules.extend(parse_docx_rules(payload, source_name=doc.source_name))
             else:
-                rules.extend(parse_txt_rules(payload))
+                rules.extend(parse_txt_rules(payload, source_name=doc.source_name))
         except Exception:
             continue
 
@@ -770,6 +796,10 @@ def extract_text_for_foundational_doc(raw: bytes, filename: str | None) -> str:
     try:
         if lowered.endswith(".csv") or lowered.endswith(".txt") or lowered.endswith(".json"):
             return raw.decode("utf-8", errors="ignore")
+        if lowered.endswith(".xlsx"):
+            return extract_xlsx_text(raw)
+        if lowered.endswith(".docx"):
+            return extract_docx_text(raw)
         return raw.decode("utf-8", errors="ignore")
     except Exception:
         return ""
@@ -931,7 +961,7 @@ def extract_terms(text: str, limit: int = 20) -> list[str]:
     return most_common
 
 
-def parse_csv_rules(data: bytes) -> list[ContextRule]:
+def parse_csv_rules(data: bytes, source_name: str | None = None) -> list[ContextRule]:
     df = pd.read_csv(io.BytesIO(data))
     normalized = {column.strip().lower(): column for column in df.columns}
 
@@ -944,12 +974,12 @@ def parse_csv_rules(data: bytes) -> list[ContextRule]:
             old_value = str(row.get(old_col, "")).strip()
             new_value = str(row.get(new_col, "")).strip()
             if old_value and new_value and old_value.lower() != "nan" and new_value.lower() != "nan":
-                rules.append(ContextRule(old_value=old_value, new_value=new_value))
+                rules.append(ContextRule(old_value=old_value, new_value=new_value, source_name=source_name))
 
     return rules
 
 
-def parse_csv_context_entries(data: bytes) -> list[ContextEntry]:
+def parse_csv_context_entries(data: bytes, source_name: str | None = None) -> list[ContextEntry]:
     df = pd.read_csv(io.BytesIO(data))
     normalized = {column.strip().lower(): column for column in df.columns}
     object_col = (
@@ -981,7 +1011,7 @@ def parse_csv_context_entries(data: bytes) -> list[ContextEntry]:
     if not key_col or not value_col:
         return entries
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         key_raw = str(row.get(key_col, "")).strip()
         value_raw = str(row.get(value_col, "")).strip()
         object_raw = str(row.get(object_col, "")).strip() if object_col else ""
@@ -992,12 +1022,14 @@ def parse_csv_context_entries(data: bytes) -> list[ContextEntry]:
                 object_name=normalize_key(object_raw) if object_raw else None,
                 key=normalize_key(key_raw),
                 value=value_raw,
+                source_name=source_name,
+                source_ref=f"row:{int(idx)+2}" if isinstance(idx, int) else None,
             )
         )
     return entries
 
 
-def parse_json_rules(data: bytes) -> list[ContextRule]:
+def parse_json_rules(data: bytes, source_name: str | None = None) -> list[ContextRule]:
     payload = json.loads(data.decode("utf-8"))
     rules: list[ContextRule] = []
 
@@ -1008,12 +1040,12 @@ def parse_json_rules(data: bytes) -> list[ContextRule]:
             old_value = str(row.get("old") or row.get("deprecated") or "").strip()
             new_value = str(row.get("new") or row.get("replacement") or "").strip()
             if old_value and new_value:
-                rules.append(ContextRule(old_value=old_value, new_value=new_value))
+                rules.append(ContextRule(old_value=old_value, new_value=new_value, source_name=source_name))
 
     return rules
 
 
-def parse_json_context_entries(data: bytes) -> list[ContextEntry]:
+def parse_json_context_entries(data: bytes, source_name: str | None = None) -> list[ContextEntry]:
     payload = json.loads(data.decode("utf-8"))
     entries: list[ContextEntry] = []
 
@@ -1027,6 +1059,7 @@ def parse_json_context_entries(data: bytes) -> list[ContextEntry]:
                 object_name=normalize_key(object_name) if object_name else None,
                 key=normalize_key(key_text),
                 value=value_text,
+                source_name=source_name,
             )
         )
 
@@ -1063,48 +1096,215 @@ def parse_json_context_entries(data: bytes) -> list[ContextEntry]:
     return entries
 
 
-def parse_txt_rules(data: bytes) -> list[ContextRule]:
+def parse_txt_rules(data: bytes, source_name: str | None = None) -> list[ContextRule]:
     rules: list[ContextRule] = []
     text = data.decode("utf-8", errors="ignore")
 
-    for line in text.splitlines():
-        if "=>" in line:
-            old_value, new_value = [chunk.strip() for chunk in line.split("=>", maxsplit=1)]
-            if old_value and new_value:
-                rules.append(ContextRule(old_value=old_value, new_value=new_value))
+    for line_idx, line in enumerate(text.splitlines(), start=1):
+        parsed = parse_rule_line(line)
+        if parsed:
+            old_value, new_value = parsed
+            rules.append(
+                ContextRule(
+                    old_value=old_value,
+                    new_value=new_value,
+                    source_name=source_name,
+                    source_ref=f"line:{line_idx}",
+                )
+            )
 
     return rules
 
 
-def parse_txt_context_entries(data: bytes) -> list[ContextEntry]:
+def parse_txt_context_entries(data: bytes, source_name: str | None = None) -> list[ContextEntry]:
     entries: list[ContextEntry] = []
     text = data.decode("utf-8", errors="ignore")
-    for line in text.splitlines():
+    for line_idx, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
 
-        # Supports:
-        # - zone.key: value
-        # - key: value
-        # - zone.key => value
-        # - key => value
-        match = re.match(r"^(?:(?P<object>[A-Za-z0-9_\-]+)\.)?(?P<key>[A-Za-z0-9_\-]+)\s*(?::|=>)\s*(?P<value>.+)$", stripped)
-        if not match:
+        parsed = parse_generic_key_value_line(stripped)
+        if not parsed:
             continue
 
-        object_name = match.group("object")
-        key = normalize_key(match.group("key"))
-        value = match.group("value").strip()
+        object_name, key, value = parsed
         if key and value:
             entries.append(
                 ContextEntry(
                     object_name=normalize_key(object_name) if object_name else None,
-                    key=key,
+                    key=normalize_key(key),
                     value=value,
+                    source_name=source_name,
+                    source_ref=f"line:{line_idx}",
                 )
             )
     return entries
+
+
+def parse_xlsx_rules(data: bytes, source_name: str | None = None) -> list[ContextRule]:
+    rules: list[ContextRule] = []
+    for sheet_name, row_idx, row in iterate_xlsx_rows(data):
+        normalized = {str(k).strip().lower(): str(v).strip() for k, v in row.items() if str(k).strip()}
+        old_value = (
+            normalized.get("old")
+            or normalized.get("deprecated")
+            or normalized.get("current")
+            or ""
+        ).strip()
+        new_value = (
+            normalized.get("new")
+            or normalized.get("replacement")
+            or normalized.get("updated")
+            or normalized.get("accepted")
+            or ""
+        ).strip()
+        if old_value and new_value:
+            rules.append(
+                ContextRule(
+                    old_value=old_value,
+                    new_value=new_value,
+                    source_name=source_name,
+                    source_ref=f"{sheet_name}!row:{row_idx}",
+                )
+            )
+    return rules
+
+
+def parse_xlsx_context_entries(data: bytes, source_name: str | None = None) -> list[ContextEntry]:
+    entries: list[ContextEntry] = []
+    for sheet_name, row_idx, row in iterate_xlsx_rows(data):
+        normalized = {str(k).strip().lower(): str(v).strip() for k, v in row.items() if str(k).strip()}
+        object_name = (
+            normalized.get("object")
+            or normalized.get("zone")
+            or normalized.get("section")
+            or normalized.get("category")
+            or ""
+        ).strip()
+        key = (
+            normalized.get("key")
+            or normalized.get("object_key")
+            or normalized.get("field")
+            or normalized.get("name")
+            or ""
+        ).strip()
+        value = (
+            normalized.get("value")
+            or normalized.get("expected")
+            or normalized.get("target")
+            or normalized.get("new")
+            or normalized.get("replacement")
+            or normalized.get("accepted")
+            or ""
+        ).strip()
+        if not key or not value:
+            non_empty = [(k, v) for k, v in normalized.items() if str(v).strip()]
+            if len(non_empty) >= 2:
+                key = key or str(non_empty[0][1]).strip()
+                value = value or str(non_empty[1][1]).strip()
+        if key and value:
+            entries.append(
+                ContextEntry(
+                    object_name=normalize_key(object_name) if object_name else None,
+                    key=normalize_key(key),
+                    value=value,
+                    source_name=source_name,
+                    source_ref=f"{sheet_name}!row:{row_idx}",
+                )
+            )
+    return entries
+
+
+def parse_docx_rules(data: bytes, source_name: str | None = None) -> list[ContextRule]:
+    text = extract_docx_text(data)
+    return parse_txt_rules(text.encode("utf-8"), source_name=source_name)
+
+
+def parse_docx_context_entries(data: bytes, source_name: str | None = None) -> list[ContextEntry]:
+    text = extract_docx_text(data)
+    return parse_txt_context_entries(text.encode("utf-8"), source_name=source_name)
+
+
+def iterate_xlsx_rows(data: bytes) -> list[tuple[str, int, dict[str, Any]]]:
+    sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, dtype=str)
+    rows: list[tuple[str, int, dict[str, Any]]] = []
+    for sheet_name, df in sheets.items():
+        if df is None or df.empty:
+            continue
+        for row_idx, row in df.fillna("").iterrows():
+            rows.append((str(sheet_name), int(row_idx) + 2, row.to_dict()))
+    return rows
+
+
+def extract_xlsx_text(data: bytes) -> str:
+    lines: list[str] = []
+    for sheet_name, row_idx, row in iterate_xlsx_rows(data):
+        parts = []
+        for key, value in row.items():
+            value_text = str(value).strip()
+            if not value_text:
+                continue
+            parts.append(f"{str(key).strip()}: {value_text}")
+        if parts:
+            lines.append(f"[{sheet_name} row {row_idx}] " + " | ".join(parts))
+    return "\n".join(lines)
+
+
+def extract_docx_text(data: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            xml_data = archive.read("word/document.xml")
+    except Exception:
+        return ""
+    try:
+        root = ET.fromstring(xml_data)
+    except Exception:
+        return ""
+
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    lines: list[str] = []
+    for paragraph in root.findall(".//w:p", ns):
+        chunks = []
+        for text_node in paragraph.findall(".//w:t", ns):
+            if text_node.text:
+                chunks.append(text_node.text)
+        merged = "".join(chunks).strip()
+        if merged:
+            lines.append(merged)
+    return "\n".join(lines)
+
+
+def parse_rule_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if "=>" in stripped:
+        left, right = [chunk.strip() for chunk in stripped.split("=>", maxsplit=1)]
+        if left and right:
+            return left, right
+    if "->" in stripped:
+        left, right = [chunk.strip() for chunk in stripped.split("->", maxsplit=1)]
+        if left and right:
+            return left, right
+    return None
+
+
+def parse_generic_key_value_line(line: str) -> tuple[str | None, str, str] | None:
+    # Supports:
+    # - zone.key: value
+    # - key: value
+    # - zone.key => value
+    # - key => value
+    match = re.match(r"^(?:(?P<object>[A-Za-z0-9 _\-/]+)\.)?(?P<key>[A-Za-z0-9 _\-/]+)\s*(?::|=>)\s*(?P<value>.+)$", line)
+    if not match:
+        return None
+    object_name = match.group("object")
+    key = (match.group("key") or "").strip()
+    value = (match.group("value") or "").strip()
+    if not key or not value:
+        return None
+    return object_name.strip() if object_name else None, key, value
 
 
 def stringify_context_value(value: Any) -> str:
@@ -1123,9 +1323,9 @@ def stringify_context_value(value: Any) -> str:
 
 def dedupe_context_entries(entries: list[ContextEntry]) -> list[ContextEntry]:
     deduped: list[ContextEntry] = []
-    seen: set[tuple[str | None, str, str]] = set()
+    seen: set[tuple[str | None, str, str, str | None]] = set()
     for entry in entries:
-        key = (entry.object_name, entry.key, entry.value)
+        key = (entry.object_name, entry.key, entry.value, entry.source_name)
         if key in seen:
             continue
         seen.add(key)
@@ -1152,42 +1352,77 @@ def compare_zone_rows_to_context(
         candidates = by_object_and_key.get((zone_key, row.object_key), []) or by_key.get(row.object_key, [])
         selected = candidates[0] if candidates else None
 
-        status: Literal["match", "mismatch", "rule_mismatch", "no_context"] = "no_context"
-        suggested_value: str | None = None
-        context_object: str | None = None
-        context_key: str | None = None
-        context_value: str | None = None
+        status: Literal["change", "review_only", "unsure"] = "unsure"
+        replace_with = "NO CHANGE RECOMMENDED"
+        change_type = "Review Only"
+        source_basis = "No governing source found"
+        priority = "—"
+        notes = "Not found in context files."
 
         if selected:
-            context_object = selected.object_name
-            context_key = selected.key
-            context_value = selected.value
             if values_equivalent(row.object_values, selected.value):
-                status = "match"
+                status = "review_only"
+                replace_with = "NO CHANGE"
+                source_basis = format_source_basis(selected.source_name, selected.source_ref, "Accepted in context")
+                priority = "Low"
+                notes = "Matches accepted value from context."
             else:
-                status = "mismatch"
-                suggested_value = selected.value
+                status = "change"
+                replace_with = selected.value
+                change_type = "Value Update"
+                source_basis = format_source_basis(selected.source_name, selected.source_ref, "Context value differs")
+                priority = "High"
+                notes = "Context indicates this field is outdated or superseded."
         else:
-            rule_suggestion = suggest_value_from_rules(row.object_values, rules)
-            if rule_suggestion:
-                status = "rule_mismatch"
-                suggested_value = rule_suggestion
+            matched_rule = find_matching_rule(row.object_values, rules)
+            if matched_rule:
+                status = "change"
+                replace_with = matched_rule.new_value
+                change_type = "Spec/Standard Update"
+                source_basis = format_source_basis(
+                    matched_rule.source_name,
+                    matched_rule.source_ref,
+                    "Rule-based outdated to approved replacement",
+                )
+                priority = "High"
+                notes = "Detected outdated content that has an approved replacement."
 
         comparisons.append(
             ComparisonRow(
-                page=row.page,
+                sheet=row.page,
                 zone=row.zone,
-                object_key=row.object_key,
-                found_value=drawing_value,
-                context_object=context_object,
-                context_key=context_key,
-                context_value=context_value,
+                existing_text=drawing_value,
+                replace_with=replace_with,
+                change_type=change_type,
+                source_basis=source_basis,
+                priority=priority,
+                notes=notes,
                 status=status,
-                suggested_value=suggested_value,
             )
         )
 
     return comparisons
+
+
+def filter_rows_for_display(rows: list[ComparisonRow]) -> list[ComparisonRow]:
+    return [row for row in rows if row.status != "unsure"]
+
+
+def find_matching_rule(found_values: list[str], rules: list[ContextRule]) -> ContextRule | None:
+    for value in found_values:
+        normalized_value = normalize_compare_text(value)
+        for rule in rules:
+            if normalize_compare_text(rule.old_value) in normalized_value:
+                return rule
+    return None
+
+
+def format_source_basis(source_name: str | None, source_ref: str | None, default_reason: str) -> str:
+    if source_name and source_ref:
+        return f"{source_name} ({source_ref}) - {default_reason}"
+    if source_name:
+        return f"{source_name} - {default_reason}"
+    return default_reason
 
 
 def values_equivalent(found_values: list[str], context_value: str) -> bool:
@@ -1207,11 +1442,9 @@ def normalize_compare_text(value: str) -> str:
 
 
 def suggest_value_from_rules(found_values: list[str], rules: list[ContextRule]) -> str | None:
-    for value in found_values:
-        normalized_value = normalize_compare_text(value)
-        for rule in rules:
-            if normalize_compare_text(rule.old_value) in normalized_value:
-                return rule.new_value
+    matched = find_matching_rule(found_values, rules)
+    if matched:
+        return matched.new_value
     return None
 
 
@@ -1311,6 +1544,210 @@ def truncate(text: str, max_len: int = 90) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
+
+
+def find_llm_change_rows(
+    page_texts: list[str],
+    page_zone_texts: list[dict[str, str]],
+    context_rules: list[ContextRule],
+    context_entries: list[ContextEntry],
+    context_payloads: list[tuple[str, bytes]],
+    sections: list[str],
+    llm_runtime: LlmRuntimeConfig,
+    context_sources: list[str],
+) -> tuple[list[ComparisonRow], bool, str | None]:
+    if not OLLAMA_ENABLED:
+        return [], False, None
+    if llm_runtime.mode == "online" and not llm_runtime.api_key:
+        return [], False, "Online mode requires an Ollama API key."
+
+    prompt = build_llm_change_prompt(
+        page_texts=page_texts,
+        page_zone_texts=page_zone_texts,
+        rules=context_rules,
+        entries=context_entries,
+        sections=sections,
+        context_payloads=context_payloads,
+        context_sources=context_sources,
+    )
+    response_text, error_message = call_ollama(prompt, llm_runtime)
+    if error_message:
+        return [], False, error_message
+
+    payload = parse_json_object(response_text)
+    if not payload:
+        return [], False, "Gemma response could not be parsed as JSON."
+    raw_rows = payload.get("rows", [])
+    if not isinstance(raw_rows, list):
+        return [], False, "Gemma JSON did not include a valid 'rows' array."
+
+    rows: list[ComparisonRow] = []
+    for raw in raw_rows:
+        row = normalize_change_row(raw)
+        if row:
+            rows.append(row)
+    if not rows:
+        return [], True, "Gemma returned no valid change rows."
+    return rows, True, None
+
+
+def normalize_change_row(raw: Any) -> ComparisonRow | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        sheet_raw = raw.get("sheet")
+        if sheet_raw is None:
+            sheet_raw = raw.get("page")
+        sheet = int(sheet_raw)
+        zone = str(raw.get("zone") or "").strip() or "drawing_area"
+        existing_text = str(raw.get("existing_text") or raw.get("existing_text_field") or "").strip()
+        if not existing_text:
+            return None
+        replace_with = str(raw.get("replace_with") or "NO CHANGE RECOMMENDED").strip() or "NO CHANGE RECOMMENDED"
+        change_type = str(raw.get("change_type") or "Review Only").strip() or "Review Only"
+        source_basis = str(raw.get("source_basis") or "No governing source found").strip() or "No governing source found"
+        priority = str(raw.get("priority") or "—").strip() or "—"
+        notes = str(raw.get("notes") or "").strip()
+        status_text = str(raw.get("status") or "").strip().lower()
+        status: Literal["change", "review_only", "unsure"] = "unsure"
+        if status_text in {"change", "update", "revise"}:
+            status = "change"
+        elif status_text in {"review_only", "review", "no_change"}:
+            status = "review_only"
+        elif "no governing source" in source_basis.lower():
+            status = "unsure"
+        elif replace_with.upper() == "NO CHANGE":
+            status = "review_only"
+        elif replace_with.upper() == "NO CHANGE RECOMMENDED":
+            status = "unsure"
+        else:
+            status = "change"
+
+        return ComparisonRow(
+            sheet=sheet,
+            zone=zone,
+            existing_text=existing_text,
+            replace_with=replace_with,
+            change_type=change_type,
+            source_basis=source_basis,
+            priority=priority,
+            notes=notes,
+            status=status,
+        )
+    except Exception:
+        return None
+
+
+def build_llm_change_prompt(
+    page_texts: list[str],
+    page_zone_texts: list[dict[str, str]],
+    rules: list[ContextRule],
+    entries: list[ContextEntry],
+    sections: list[str],
+    context_payloads: list[tuple[str, bytes]],
+    context_sources: list[str],
+) -> str:
+    sampled_pages = []
+    for idx, text in enumerate(page_texts[:4], start=1):
+        sampled_pages.append(f"SHEET {idx}:\n{truncate(text, 3400)}")
+
+    zone_pages = []
+    for idx, zone_map in enumerate(page_zone_texts[:4], start=1):
+        zone_lines = [f"SHEET {idx} ZONES:"]
+        for zone_name in ["notes", "revision_block", "title_block", "drawing_area"]:
+            zone_text = zone_map.get(zone_name, "").strip()
+            if zone_text:
+                zone_lines.append(f"- {zone_name}: {truncate(zone_text, 1200)}")
+        if len(zone_lines) > 1:
+            zone_pages.append("\n".join(zone_lines))
+
+    rules_text = "\n".join(
+        [
+            f"- {rule.old_value} => {rule.new_value} (source: {rule.source_name or 'unknown'})"
+            for rule in rules[:80]
+        ]
+    ) or "- none"
+    entries_text = "\n".join(
+        [
+            f"- object={entry.object_name or 'n/a'} key={entry.key} value={truncate(entry.value, 200)} "
+            f"(source: {entry.source_name or 'unknown'})"
+            for entry in entries[:120]
+        ]
+    ) or "- none"
+    context_text = build_context_payload_excerpt(context_payloads)
+    sources_text = ", ".join(context_sources) if context_sources else "none"
+    sections_text = ", ".join(sections) if sections else "none"
+    drawing_excerpt = "\n\n".join(sampled_pages)
+    zone_excerpt = "\n\n".join(zone_pages) if zone_pages else "none"
+
+    return f"""
+You are an engineering drawing comparison assistant.
+
+Core instruction:
+Parse the content in this drawing by section (notes, revision history block, title block, drawing area) and compare against the provided context files (excel/doc/csv/json/txt) that may indicate values as OUTDATED or ACCEPTED.
+If something is not found in context files, treat it as unsure and do not suggest a change.
+If context indicates an update, suggest the needed change.
+
+Return STRICT JSON only with this shape:
+{{
+  "rows": [
+    {{
+      "sheet": 1,
+      "zone": "notes|revision_block|title_block|drawing_area",
+      "existing_text": "string",
+      "replace_with": "string (NO CHANGE or NO CHANGE RECOMMENDED allowed)",
+      "change_type": "string",
+      "source_basis": "must include context filename(s) when possible",
+      "priority": "High|Medium|Low|—",
+      "notes": "string",
+      "status": "change|review_only|unsure"
+    }}
+  ]
+}}
+
+Requirements:
+- Prioritize evidence-backed updates.
+- Include Source/Basis using filename list whenever possible.
+- For unsure rows, keep status=unsure and replace_with=NO CHANGE RECOMMENDED.
+- Keep rows concise and table-ready.
+
+Detected sections: {sections_text}
+Context source files: {sources_text}
+
+Context rules:
+{rules_text}
+
+Context entries:
+{entries_text}
+
+Context text excerpts:
+{context_text}
+
+Detected layout zones:
+{zone_excerpt}
+
+Drawing text:
+{drawing_excerpt}
+""".strip()
+
+
+def build_context_payload_excerpt(payloads: list[tuple[str, bytes]]) -> str:
+    excerpts: list[str] = []
+    for filename, data in payloads[:8]:
+        lowered = filename.lower()
+        try:
+            if lowered.endswith(".xlsx"):
+                text = extract_xlsx_text(data)
+            elif lowered.endswith(".docx"):
+                text = extract_docx_text(data)
+            else:
+                text = data.decode("utf-8", errors="ignore")
+        except Exception:
+            text = ""
+        if not text.strip():
+            continue
+        excerpts.append(f"[{filename}]\n{truncate(text, 1200)}")
+    return "\n\n".join(excerpts) if excerpts else "- none"
 
 
 def find_llm_issues(

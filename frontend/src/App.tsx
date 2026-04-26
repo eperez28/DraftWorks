@@ -30,15 +30,14 @@ type ZoneItemRow = {
 }
 
 type ComparisonRow = {
-  page: number
+  sheet: number
   zone: string
-  object_key: string
-  found_value: string
-  context_object: string | null
-  context_key: string | null
-  context_value: string | null
-  status: 'match' | 'mismatch' | 'rule_mismatch' | 'no_context'
-  suggested_value: string | null
+  existing_text: string
+  replace_with: string
+  change_type: string
+  source_basis: string
+  priority: string
+  notes: string
 }
 
 type AnalysisResult = {
@@ -392,29 +391,27 @@ export function App() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Page</th>
+                        <th>Sheet</th>
                         <th>Zone</th>
-                        <th>Object</th>
-                        <th>Drawing key</th>
-                        <th>Context key</th>
-                        <th>Found value</th>
-                        <th>Context value</th>
-                        <th>Status</th>
-                        <th>Suggested value</th>
+                        <th>Existing Text / Field</th>
+                        <th>Replace With</th>
+                        <th>Change Type</th>
+                        <th>Source / Basis</th>
+                        <th>Priority</th>
+                        <th>Notes</th>
                       </tr>
                     </thead>
                     <tbody>
                       {result.comparison_rows.map((row, idx) => (
-                        <tr key={`${row.page}-${row.zone}-${row.object_key}-${idx}`}>
-                          <td>{row.page}</td>
+                        <tr key={`${row.sheet}-${row.zone}-${idx}`}>
+                          <td>{row.sheet}</td>
                           <td>{row.zone}</td>
-                          <td>{row.context_object ?? '-'}</td>
-                          <td>{row.object_key}</td>
-                          <td>{row.context_key ?? '-'}</td>
-                          <td>{row.found_value || '-'}</td>
-                          <td>{row.context_value ?? '-'}</td>
-                          <td>{row.status}</td>
-                          <td>{row.suggested_value ?? '-'}</td>
+                          <td>{row.existing_text || '-'}</td>
+                          <td>{row.replace_with || '-'}</td>
+                          <td>{row.change_type || '-'}</td>
+                          <td>{row.source_basis || '-'}</td>
+                          <td>{row.priority || '-'}</td>
+                          <td>{row.notes || '-'}</td>
                         </tr>
                       ))}
                     </tbody>
