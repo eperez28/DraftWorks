@@ -45,6 +45,8 @@ npm run dev
 - API: `http://localhost:8000`
 
 ### Run online (webapp users paste their own key)
+Web app URL: `https://draftworks-app.vercel.app`
+
 1. Create an Ollama API key at `https://ollama.com/settings/keys`.
 2. Open the webapp and select `Run online (Ollama Cloud)`.
 3. Paste the key in `Ollama API key`.
