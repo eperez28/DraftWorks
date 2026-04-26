@@ -120,14 +120,6 @@ body {
   color: #4d5560;
 }
 
-.analyzer-panel {
-  grid-row: span 2;
-}
-
-.analyzer-panel h3 {
-  margin-bottom: 12px;
-}
-
 .form-grid {
   display: grid;
   gap: 12px;
@@ -192,70 +184,6 @@ button:disabled {
   margin-top: 6px;
 }
 
-.gradient-box {
-  height: 260px;
-  border-radius: 14px;
-  background:
-    radial-gradient(circle at center, rgba(233, 128, 188, 0.9) 0%, rgba(215, 188, 226, 0.5) 40%, rgba(193, 202, 231, 0.8) 100%);
-  margin-bottom: 14px;
-}
-
-.card-row {
-  display: grid;
-  grid-template-columns: 1fr 3fr;
-  gap: 14px;
-  align-items: end;
-}
-
-.card-row h2 {
-  margin: 0;
-  font-size: 3rem;
-  line-height: 0.95;
-}
-
-.feature-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-}
-
-.feature-cards article {
-  background: #e7e8ea;
-  border-radius: 14px;
-  padding: 16px;
-}
-
-.feature-cards h4 {
-  margin: 0;
-  font-size: 1.4rem;
-}
-
-.feature-cards p {
-  margin: 8px 0 12px;
-  color: #4d5560;
-}
-
-.thumb {
-  height: 122px;
-  border-radius: 14px;
-}
-
-.thumb.one {
-  background: radial-gradient(circle at 38% 40%, #ffe8a8 0%, #ffca73 48%, #f0a14f 100%);
-}
-
-.thumb.two {
-  background:
-    radial-gradient(circle at 20% 20%, #ddad20 0 8%, transparent 9%),
-    radial-gradient(circle at 60% 26%, #ddad20 0 8%, transparent 9%),
-    radial-gradient(circle at 44% 68%, #ddad20 0 8%, transparent 9%),
-    #2bc3ff;
-}
-
-.thumb.three {
-  background: linear-gradient(135deg, #f9d2a4 0%, #0cbaa7 55%, #0f8ea1 100%);
-}
-
 .results-wrap {
   padding-top: 20px;
 }
@@ -302,41 +230,9 @@ tbody tr:nth-child(even) {
   background: #fafcfe;
 }
 
-.footer-grid {
-  border-top: 1px solid #d5d9de;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-  padding-bottom: 72px;
-}
-
-.footer-grid h4 {
-  margin: 0;
-  font-size: 1.35rem;
-}
-
-.footer-grid p {
-  margin: 10px 0 0;
-  color: #4f5762;
-}
-
 @media (max-width: 980px) {
   .split-block,
-  .panel-grid,
-  .card-row,
-  .footer-grid {
+  .panel-grid {
     grid-template-columns: 1fr;
-  }
-
-  .analyzer-panel {
-    grid-row: auto;
-  }
-
-  .feature-cards {
-    grid-template-columns: 1fr;
-  }
-
-  .card-row h2 {
-    font-size: 2.4rem;
   }
 }

@@ -154,7 +154,7 @@ export function App() {
           </ul>
         </article>
 
-        <article className="panel analyzer-panel">
+        <article className="panel">
           <h3>How it works</h3>
           <ol>
             <li>Upload drawing (PDF/image)</li>
@@ -230,37 +230,6 @@ export function App() {
             <li>Flag required updates directly for engineering review.</li>
           </ul>
         </article>
-
-        <article className="panel">
-          <div className="gradient-box" />
-          <h3>What DraftWorks does</h3>
-          <ul>
-            <li>Evidence-backed issue summaries</li>
-            <li>Clear expected vs found values</li>
-            <li>Fast demo-ready workflow</li>
-          </ul>
-        </article>
-      </section>
-
-      <section className="content-wrap card-row">
-        <h2>What DraftWorks does</h2>
-        <div className="feature-cards">
-          <article>
-            <h4>This outstanding object</h4>
-            <p>Call out a feature, benefit, or value that can stand on its own.</p>
-            <div className="thumb one" />
-          </article>
-          <article>
-            <h4>A greater object</h4>
-            <p>Call out a feature, benefit, or value that can stand on its own.</p>
-            <div className="thumb two" />
-          </article>
-          <article>
-            <h4>And another one</h4>
-            <p>Call out a feature, benefit, or value that can stand on its own.</p>
-            <div className="thumb three" />
-          </article>
-        </div>
       </section>
 
       {result && (
@@ -305,20 +274,6 @@ export function App() {
         </section>
       )}
 
-      <footer className="content-wrap footer-grid">
-        <article>
-          <h4>Here text</h4>
-          <p>Writing for websites is both simple and complex. Say what you mean in plain words.</p>
-        </article>
-        <article>
-          <h4>There text</h4>
-          <p>Are you including enough detail and references for reviewers to validate quickly?</p>
-        </article>
-        <article>
-          <h4>Everywhere text</h4>
-          <p>Structure matters. Surface the highest-risk changes first to reduce review cycles.</p>
-        </article>
-      </footer>
     </main>
   )
 }
