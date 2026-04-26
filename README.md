@@ -4,7 +4,9 @@
 DraftWorks
 
 ## Team Members
-- Add names here
+- Emanuel
+- Sanja
+- Axel
 
 ## Track
 - Add hackathon track here
