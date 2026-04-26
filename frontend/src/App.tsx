@@ -21,11 +21,21 @@ type ComplianceIssue = {
   recommendation: string
 }
 
+type ZoneItemRow = {
+  page: number
+  zone: string
+  object_key: string
+  object_values: string[]
+  line_number: number
+}
+
 type AnalysisResult = {
   run_id: string
   summary: string
   sections_detected: string[]
   issues: ComplianceIssue[]
+  zone_rows: ZoneItemRow[]
+  zone_markdown: string
   meta: {
     pages_processed: number
     used_foundational_context: boolean
@@ -42,6 +52,7 @@ type AnalysisResult = {
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || 'http://localhost:8000'
 
 const fileKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`
+type CloudKeySource = 'app' | 'byok'
 
 export function App() {
   const resultsRef = useRef<HTMLElement | null>(null)
@@ -49,7 +60,8 @@ export function App() {
   const [contextFiles, setContextFiles] = useState<File[]>([])
   const [useFoundational, setUseFoundational] = useState(false)
   const [inferenceMode, setInferenceMode] = useState<'online' | 'local'>('online')
-  const [inferenceOpen, setInferenceOpen] = useState(true)
+  const [inferenceOpen, setInferenceOpen] = useState(false)
+  const [cloudKeySource, setCloudKeySource] = useState<CloudKeySource>('app')
   const [userApiKey, setUserApiKey] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
@@ -60,16 +72,17 @@ export function App() {
     return result.issues.filter((i) => i.severity === 'high' || i.severity === 'critical').length
   }, [result])
 
+  const zoneCountByName = useMemo(() => {
+    if (!result) return new Map<string, number>()
+    const counts = new Map<string, number>()
+    result.zone_rows.forEach((row) => counts.set(row.zone, (counts.get(row.zone) ?? 0) + 1))
+    return counts
+  }, [result])
+
   useEffect(() => {
     if (!result) return
     resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [result])
-
-  useEffect(() => {
-    if (inferenceMode === 'online' && userApiKey.trim()) {
-      setInferenceOpen(false)
-    }
-  }, [inferenceMode, userApiKey])
 
   const onDrawingChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null
@@ -99,8 +112,8 @@ export function App() {
       setError('Please upload one drawing first.')
       return
     }
-    if (inferenceMode === 'online' && !userApiKey.trim()) {
-      setError('Paste your Ollama API key to run in online mode.')
+    if (inferenceMode === 'online' && cloudKeySource === 'byok' && !userApiKey.trim()) {
+      setError('Paste your Ollama API key to run in BYOK mode.')
       return
     }
 
@@ -112,7 +125,7 @@ export function App() {
     formData.append('drawing', drawing)
     formData.append('use_foundational_context', String(useFoundational))
     formData.append('inference_mode', inferenceMode)
-    if (inferenceMode === 'online' && userApiKey.trim()) {
+    if (inferenceMode === 'online' && cloudKeySource === 'byok' && userApiKey.trim()) {
       formData.append('ollama_api_key', userApiKey.trim())
     }
     contextFiles.forEach((file) => formData.append('context_files', file))
@@ -154,69 +167,20 @@ export function App() {
 
       <section className="app-workspace">
         <aside className="control-panel">
-          <h2>Run Analysis</h2>
-          <p>Complete these steps, then hit compare.</p>
+          <div className="panel-head">
+            <div>
+              <h2>Run Analysis</h2>
+              <p>Upload drawing + context, then hit compare.</p>
+            </div>
+            <button type="button" className="settings-btn" onClick={() => setInferenceOpen((prev) => !prev)}>
+              <span aria-hidden="true">⚙</span>
+              Settings
+            </button>
+          </div>
 
           <form onSubmit={onSubmit} className="form-grid">
             <section className="setting-card">
-              <div className="card-head">
-                <h3>1. Inference Settings</h3>
-                <button
-                  type="button"
-                  className="ghost-btn"
-                  onClick={() => setInferenceOpen((prev) => !prev)}
-                >
-                  {inferenceOpen ? 'Collapse' : 'Edit'}
-                </button>
-              </div>
-
-              {inferenceOpen ? (
-                <div className="stack">
-                  <fieldset className="mode-switch" aria-label="Inference mode">
-                    <legend>Inference mode</legend>
-                    <label className="inline">
-                      <input
-                        type="radio"
-                        name="inference_mode"
-                        checked={inferenceMode === 'online'}
-                        onChange={() => setInferenceMode('online')}
-                      />
-                      Run online (Ollama Cloud)
-                    </label>
-                    <label className="inline">
-                      <input
-                        type="radio"
-                        name="inference_mode"
-                        checked={inferenceMode === 'local'}
-                        onChange={() => setInferenceMode('local')}
-                      />
-                      Run locally on device
-                    </label>
-                  </fieldset>
-
-                  {inferenceMode === 'online' && (
-                    <label>
-                      Ollama API key
-                      <input
-                        type="password"
-                        placeholder="Paste your Ollama API key"
-                        value={userApiKey}
-                        onChange={(event) => setUserApiKey(event.target.value)}
-                      />
-                    </label>
-                  )}
-                </div>
-              ) : (
-                <p className="mini-note">
-                  {inferenceMode === 'online' && userApiKey.trim()
-                    ? 'Online mode selected. API key saved.'
-                    : `Mode selected: ${inferenceMode}`}
-                </p>
-              )}
-            </section>
-
-            <section className="setting-card">
-              <h3>2. Files</h3>
+              <h3>1. Files</h3>
 
               <label>
                 Drawing file
@@ -255,9 +219,86 @@ export function App() {
               </label>
             </section>
 
+            {inferenceOpen && (
+              <section className="setting-card settings-card">
+                <h3>Settings (Optional)</h3>
+                <div className="stack">
+                  <fieldset className="mode-switch" aria-label="Inference mode">
+                    <legend>Inference mode</legend>
+                    <label className="inline">
+                      <input
+                        type="radio"
+                        name="inference_mode"
+                        checked={inferenceMode === 'online'}
+                        onChange={() => setInferenceMode('online')}
+                      />
+                      Run online (Ollama Cloud)
+                    </label>
+                    <label className="inline">
+                      <input
+                        type="radio"
+                        name="inference_mode"
+                        checked={inferenceMode === 'local'}
+                        onChange={() => setInferenceMode('local')}
+                      />
+                      Run locally on device
+                    </label>
+                  </fieldset>
+
+                  {inferenceMode === 'online' && (
+                    <>
+                      <fieldset className="mode-switch" aria-label="Cloud API key source">
+                        <legend>Cloud API key source</legend>
+                        <label className="inline">
+                          <input
+                            type="radio"
+                            name="cloud_key_source"
+                            checked={cloudKeySource === 'app'}
+                            onChange={() => setCloudKeySource('app')}
+                          />
+                          Use app key (default)
+                        </label>
+                        <label className="inline">
+                          <input
+                            type="radio"
+                            name="cloud_key_source"
+                            checked={cloudKeySource === 'byok'}
+                            onChange={() => setCloudKeySource('byok')}
+                          />
+                          Bring your own key (BYOK)
+                        </label>
+                      </fieldset>
+
+                      {cloudKeySource === 'byok' && (
+                        <label>
+                          Ollama API key
+                          <input
+                            type="password"
+                            placeholder="Paste your Ollama API key"
+                            value={userApiKey}
+                            onChange={(event) => setUserApiKey(event.target.value)}
+                          />
+                        </label>
+                      )}
+                    </>
+                  )}
+                </div>
+              </section>
+            )}
+
             <button className="primary-btn" type="submit" disabled={isLoading}>
               {isLoading ? 'Analyzing…' : 'Compare'}
             </button>
+
+            <p className="mini-note settings-summary">
+              {inferenceMode === 'online'
+                ? cloudKeySource === 'app'
+                  ? 'Online mode: app-managed key.'
+                  : userApiKey.trim()
+                    ? 'Online mode: BYOK enabled.'
+                    : 'Online mode: BYOK selected, key missing.'
+                : 'Local mode: on-device Ollama.'}
+            </p>
           </form>
 
           {error && <p className="error">{error}</p>}
@@ -276,8 +317,16 @@ export function App() {
                 <span className="pill">High/Critical: {severeCount}</span>
                 <span className="pill">Sections: {result.sections_detected.join(', ') || 'none'}</span>
                 <span className="pill">LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
+                <span className="pill">Zone rows: {result.zone_rows.length}</span>
               </div>
               {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
+
+              <div className="kpis">
+                <span className="pill">notes: {zoneCountByName.get('notes') ?? 0}</span>
+                <span className="pill">revision: {zoneCountByName.get('revision_block') ?? 0}</span>
+                <span className="pill">title: {zoneCountByName.get('title_block') ?? 0}</span>
+                <span className="pill">drawing: {zoneCountByName.get('drawing_area') ?? 0}</span>
+              </div>
 
               <div className="table-wrap">
                 <table>
@@ -302,6 +351,31 @@ export function App() {
                         <td>{issue.evidence}</td>
                         <td>{issue.expected_value ?? '-'}</td>
                         <td>{issue.found_value ?? '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Page</th>
+                      <th>Zone</th>
+                      <th>Object key</th>
+                      <th>Values</th>
+                      <th>Line</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.zone_rows.map((row, idx) => (
+                      <tr key={`${row.page}-${row.zone}-${row.object_key}-${idx}`}>
+                        <td>{row.page}</td>
+                        <td>{row.zone}</td>
+                        <td>{row.object_key}</td>
+                        <td>{row.object_values.join(' | ')}</td>
+                        <td>{row.line_number}</td>
                       </tr>
                     ))}
                   </tbody>

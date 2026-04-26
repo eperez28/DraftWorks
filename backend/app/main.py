@@ -62,6 +62,7 @@ OCR_PDF_DPI = max(72, min(300, int(os.getenv("OCR_PDF_DPI", "170"))))
 OCR_MAX_IMAGE_SIDE = max(512, int(os.getenv("OCR_MAX_IMAGE_SIDE", "2200")))
 OCR_ENABLE_PREPROCESSING = os.getenv("OCR_ENABLE_PREPROCESSING", "true").lower() != "false"
 OCR_PREPROCESS_MAX_PIXELS = max(1_000_000, int(os.getenv("OCR_PREPROCESS_MAX_PIXELS", "8000000")))
+SURREAL_ZONE_TABLE = os.getenv("SURREAL_ZONE_TABLE", "drawing_zone_items").strip() or "drawing_zone_items"
 
 
 class ComplianceIssue(BaseModel):
@@ -101,7 +102,25 @@ class AnalysisResult(BaseModel):
     summary: str
     sections_detected: list[str]
     issues: list[ComplianceIssue]
+    zone_rows: list["ZoneItemRow"]
+    zone_markdown: str
     meta: AnalysisMeta
+
+
+class ZoneItemRow(BaseModel):
+    page: int
+    zone: str
+    object_key: str
+    object_values: list[str]
+    line_number: int
+
+
+class ZoneExtractResult(BaseModel):
+    source_name: str
+    pages_processed: int
+    row_count: int
+    markdown: str
+    rows: list[ZoneItemRow]
 
 
 @dataclass
@@ -227,6 +246,8 @@ async def analyze(
         filename=drawing.filename,
         content_type=drawing.content_type,
     )
+    zone_rows = build_zone_rows(page_zone_texts)
+    zone_markdown = render_zone_rows_markdown(zone_rows, drawing.filename or "drawing")
     sections = detect_sections(page_texts, page_zone_texts)
 
     context_rules = await extract_context_rules(context_files)
@@ -266,6 +287,8 @@ async def analyze(
         summary=summary,
         sections_detected=sections,
         issues=issues,
+        zone_rows=zone_rows,
+        zone_markdown=zone_markdown,
         meta=AnalysisMeta(
             pages_processed=len(page_texts),
             used_foundational_context=use_foundational_context,
@@ -277,6 +300,39 @@ async def analyze(
             llm_endpoint=llm_runtime.url if OLLAMA_ENABLED else None,
             llm_error=llm_error,
         ),
+    )
+
+
+@app.post("/api/zones/extract", response_model=ZoneExtractResult)
+async def extract_zones(
+    drawing: UploadFile = File(...),
+    persist_to_surreal: bool = Form(default=False),
+) -> ZoneExtractResult:
+    drawing_bytes = await drawing.read()
+    if len(drawing_bytes) > MAX_DRAWING_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Drawing file exceeds limit of {MAX_DRAWING_BYTES // 1_000_000} MB.",
+        )
+
+    page_texts, _, page_zone_texts = extract_drawing_text(
+        drawing_bytes=drawing_bytes,
+        filename=drawing.filename,
+        content_type=drawing.content_type,
+    )
+    rows = build_zone_rows(page_zone_texts)
+    markdown = render_zone_rows_markdown(rows, source_name=drawing.filename or "drawing")
+
+    if persist_to_surreal:
+        ensure_surreal_configured()
+        store_zone_rows(source_name=drawing.filename or "drawing", rows=rows)
+
+    return ZoneExtractResult(
+        source_name=drawing.filename or "drawing",
+        pages_processed=len(page_texts),
+        row_count=len(rows),
+        markdown=markdown,
+        rows=rows,
     )
 
 
@@ -402,6 +458,98 @@ def classify_zone(cx: float, cy: float) -> str | None:
         if x0 <= cx <= x1 and y0 <= cy <= y1:
             return zone_name
     return None
+
+
+def build_zone_rows(page_zone_texts: list[dict[str, str]]) -> list[ZoneItemRow]:
+    rows: list[ZoneItemRow] = []
+    for page_idx, zone_map in enumerate(page_zone_texts, start=1):
+        for zone_name in ZONE_ORDER:
+            zone_text = zone_map.get(zone_name, "")
+            if not zone_text.strip():
+                continue
+            zone_rows = parse_zone_rows(page_idx=page_idx, zone=zone_name, text=zone_text)
+            rows.extend(zone_rows)
+    return rows
+
+
+def parse_zone_rows(page_idx: int, zone: str, text: str) -> list[ZoneItemRow]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    rows: list[ZoneItemRow] = []
+
+    for line_idx, line in enumerate(lines, start=1):
+        if zone == "notes":
+            rows.append(parse_note_row(page_idx, zone, line_idx, line))
+            continue
+
+        key, value = split_key_value(line)
+        if not key:
+            key = f"{zone}_item_{line_idx}"
+        if not value:
+            value = line
+        values = split_multi_values(value)
+        rows.append(
+            ZoneItemRow(
+                page=page_idx,
+                zone=zone,
+                object_key=normalize_key(key),
+                object_values=values,
+                line_number=line_idx,
+            )
+        )
+
+    return rows
+
+
+def parse_note_row(page_idx: int, zone: str, line_idx: int, line: str) -> ZoneItemRow:
+    match = re.match(r"^(\d+)[\).\s-]+(.+)$", line)
+    if match:
+        key = f"note_{match.group(1)}"
+        value = match.group(2).strip()
+    else:
+        key = f"note_{line_idx}"
+        value = line
+    return ZoneItemRow(
+        page=page_idx,
+        zone=zone,
+        object_key=key,
+        object_values=split_multi_values(value),
+        line_number=line_idx,
+    )
+
+
+def split_key_value(line: str) -> tuple[str, str]:
+    if ":" in line:
+        left, right = line.split(":", maxsplit=1)
+        if left.strip() and right.strip():
+            return left.strip(), right.strip()
+
+    spaced = re.split(r"\s{2,}", line)
+    if len(spaced) >= 2:
+        return spaced[0].strip(), " | ".join(part.strip() for part in spaced[1:] if part.strip())
+
+    return "", line.strip()
+
+
+def split_multi_values(value: str) -> list[str]:
+    if not value.strip():
+        return []
+    parts = re.split(r"\s\|\s|;|,\s{2,}", value)
+    cleaned = [part.strip() for part in parts if part.strip()]
+    return cleaned or [value.strip()]
+
+
+def normalize_key(value: str) -> str:
+    lowered = value.lower().strip()
+    lowered = re.sub(r"[^a-z0-9]+", "_", lowered)
+    return lowered.strip("_") or "item"
+
+
+def render_zone_rows_markdown(rows: list[ZoneItemRow], source_name: str) -> str:
+    lines = [f"# Zone Extraction: {source_name}", "", "| page | zone | object_key | object_values |", "|---|---|---|---|"]
+    for row in rows:
+        values = "<br>".join(row.object_values) if row.object_values else ""
+        lines.append(f"| {row.page} | {row.zone} | {row.object_key} | {values} |")
+    return "\n".join(lines)
 
 
 def run_ocr_with_preprocessing(image_bytes: bytes) -> tuple[list[str], bool]:
@@ -1087,6 +1235,29 @@ def store_foundational_chunks(doc_id: str, source_name: str, content: str) -> No
             f"created_at = time::now();"
         )
         surreal_query(chunk_query)
+
+
+def store_zone_rows(source_name: str, rows: list[ZoneItemRow]) -> None:
+    escaped_source = sql_quote(source_name)
+    for row in rows:
+        values_sql = ", ".join(sql_quote(value) for value in row.object_values)
+        table_name = zone_table_name(row.zone)
+        query = (
+            f"CREATE {table_name} SET "
+            f"source_name = {escaped_source}, "
+            f"page = {row.page}, "
+            f"zone = {sql_quote(row.zone)}, "
+            f"object_key = {sql_quote(row.object_key)}, "
+            f"object_values = [{values_sql}], "
+            f"line_number = {row.line_number}, "
+            f"created_at = time::now();"
+        )
+        surreal_query(query)
+
+
+def zone_table_name(zone: str) -> str:
+    normalized = re.sub(r"[^a-z0-9_]+", "_", zone.lower()).strip("_") or "unknown"
+    return f"{SURREAL_ZONE_TABLE}_{normalized}"
 
 
 def fetch_recent_foundational_docs(max_docs: int = 250) -> list[FoundationalDoc]:
