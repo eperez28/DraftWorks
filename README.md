@@ -35,8 +35,9 @@ The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with
 2. In the web app, select `Run online`
 3. By default, use `Use app key` (server-managed key on Render). No key needed for normal use.
 4. Optional: switch to `Bring your own key (BYOK)` and paste your own Ollama key.
-5. Upload drawing and context files, then click `Compare`
-6. Sample documents: `<add Google Drive link here>`
+5. Use the repo's sample data for a quick run: upload [assy_r3.PDF](Sample%20Files/assy_r3.PDF) as the drawing.
+6. For context, start with [MaterialsAndProcesses.xlsx](Sample%20Files/MaterialsAndProcesses.xlsx), or upload any/all of the other forms in [Sample Files](Sample%20Files/).
+7. Click `Compare`
 
 ### B) Run Locally + Ollama Cloud Key
 1. Install dependencies:
