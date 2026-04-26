@@ -1,4 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import JSZip from 'jszip'
 
 type Severity = 'low' | 'medium' | 'high' | 'critical'
 
@@ -147,6 +148,8 @@ export function App() {
       formData.append('ollama_api_key', userApiKey.trim())
     }
     contextFiles.forEach((file) => formData.append('context_files', file))
+    const supplementalFiles = await buildSupplementalContextFiles(contextFiles)
+    supplementalFiles.forEach((file) => formData.append('context_files', file))
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/analyze`, {
@@ -168,6 +171,109 @@ export function App() {
       setIsLoading(false)
     }
   }
+
+  const buildSupplementalContextFiles = async (files: File[]): Promise<File[]> => {
+    const output: File[] = []
+    for (const file of files) {
+      const lower = file.name.toLowerCase()
+      if (!lower.endsWith('.xlsx')) continue
+      try {
+        const rules = await extractXlsxOutdatedAcceptedRules(file)
+        if (!rules.length) continue
+        const content = rules.map((rule) => `${rule.oldValue} => ${rule.newValue}`).join('\n')
+        output.push(new File([content], `${file.name}.paired-rules.txt`, { type: 'text/plain' }))
+      } catch {
+        // Ignore supplemental parse errors and continue with uploaded context.
+      }
+    }
+    return output
+  }
+
+  const extractXlsxOutdatedAcceptedRules = async (
+    file: File
+  ): Promise<Array<{ oldValue: string; newValue: string }>> => {
+    const zip = await JSZip.loadAsync(await file.arrayBuffer())
+    const workbookXml = await zip.file('xl/workbook.xml')?.async('string')
+    const relsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('string')
+    if (!workbookXml || !relsXml) return []
+
+    const parser = new DOMParser()
+    const workbookDoc = parser.parseFromString(workbookXml, 'application/xml')
+    const relsDoc = parser.parseFromString(relsXml, 'application/xml')
+
+    const relTargets = new Map<string, string>()
+    Array.from(relsDoc.getElementsByTagName('Relationship')).forEach((rel) => {
+      const id = rel.getAttribute('Id')
+      const target = rel.getAttribute('Target')
+      if (id && target) relTargets.set(id, target)
+    })
+
+    const sharedStrings = await readSharedStrings(zip)
+    const sheetValues = new Map<string, string[]>()
+    for (const node of Array.from(workbookDoc.getElementsByTagName('sheet'))) {
+      const name = node.getAttribute('name')
+      const rid = node.getAttribute('r:id')
+      if (!name || !rid) continue
+      const relTarget = relTargets.get(rid)
+      if (!relTarget) continue
+      const path = `xl/${relTarget}`.replace('xl/xl/', 'xl/')
+      const raw = await zip.file(path)?.async('string')
+      if (!raw) continue
+      sheetValues.set(name, extractSheetValues(raw, sharedStrings))
+    }
+
+    const names = Array.from(sheetValues.keys())
+    if (!names.length) return []
+    const outdatedName = names.find((name) => normalizeSheetName(name) === 'outdated') ?? names[0]
+    const acceptedName = names.find((name) => ['accepted', 'approved', 'current', 'new'].includes(normalizeSheetName(name))) ?? names[1]
+    if (!outdatedName || !acceptedName) return []
+    const outdated = (sheetValues.get(outdatedName) ?? []).filter(Boolean)
+    const accepted = (sheetValues.get(acceptedName) ?? []).filter(Boolean)
+    const count = Math.min(outdated.length, accepted.length)
+    const rules: Array<{ oldValue: string; newValue: string }> = []
+    for (let i = 0; i < count; i += 1) {
+      const oldValue = outdated[i].trim()
+      const newValue = accepted[i].trim()
+      if (!oldValue || !newValue) continue
+      rules.push({ oldValue, newValue })
+    }
+    return rules
+  }
+
+  const readSharedStrings = async (zip: JSZip): Promise<string[]> => {
+    const file = zip.file('xl/sharedStrings.xml')
+    if (!file) return []
+    const xml = await file.async('string')
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(xml, 'application/xml')
+    return Array.from(doc.getElementsByTagName('si')).map((si) =>
+      Array.from(si.getElementsByTagName('t'))
+        .map((node) => node.textContent ?? '')
+        .join('')
+        .trim()
+    )
+  }
+
+  const extractSheetValues = (sheetXml: string, sharedStrings: string[]): string[] => {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(sheetXml, 'application/xml')
+    const values: string[] = []
+    Array.from(doc.getElementsByTagName('c')).forEach((cell) => {
+      const type = cell.getAttribute('t')
+      const raw = cell.getElementsByTagName('v')[0]?.textContent?.trim() ?? ''
+      if (!raw) return
+      if (type === 's') {
+        const idx = Number(raw)
+        const value = Number.isFinite(idx) ? sharedStrings[idx] ?? raw : raw
+        if (value.trim()) values.push(value.trim())
+        return
+      }
+      values.push(raw)
+    })
+    return values
+  }
+
+  const normalizeSheetName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
   const normalizeComparisonRow = (row: RawComparisonRow): ComparisonRow => {
     const existing = String(row.existing_text ?? row.found_value ?? '').trim()
