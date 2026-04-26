@@ -88,6 +88,7 @@ export function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [tableView, setTableView] = useState<'differences' | 'parsed'>('differences')
 
   const severeCount = useMemo(() => {
     if (!result) return 0
@@ -139,6 +140,7 @@ export function App() {
     setError(null)
     setIsLoading(true)
     setResult(null)
+    setTableView('differences')
 
     const formData = new FormData()
     formData.append('drawing', drawing)
@@ -473,6 +475,26 @@ export function App() {
 
           {result && (
             <>
+              {result.comparison_rows.length > 0 && result.issues.length > 0 && (
+                <div className="kpis">
+                  <button
+                    type="button"
+                    className="chip-btn"
+                    onClick={() => setTableView('differences')}
+                    disabled={tableView === 'differences'}
+                  >
+                    Differences table
+                  </button>
+                  <button
+                    type="button"
+                    className="chip-btn"
+                    onClick={() => setTableView('parsed')}
+                    disabled={tableView === 'parsed'}
+                  >
+                    Parsed table
+                  </button>
+                </div>
+              )}
               <div className="kpis">
                 <span className="pill">Total issues: {result.issues.length}</span>
                 <span className="pill">High/Critical: {severeCount}</span>
@@ -484,7 +506,7 @@ export function App() {
                 <p className="error">Foundational context fallback: {result.meta.foundational_context_error}</p>
               )}
 
-              {result.issues.length > 0 && (
+              {tableView === 'parsed' && result.issues.length > 0 && (
                 <div className="table-wrap">
                   <table>
                     <thead>
@@ -518,7 +540,7 @@ export function App() {
                 <p className="mini-note">No issues or comparison rows were detected from this run.</p>
               )}
 
-              {result.comparison_rows.length > 0 && (
+              {(tableView === 'differences' || result.issues.length === 0) && result.comparison_rows.length > 0 && (
                 <div className="table-wrap">
                   <table>
                     <thead>
