@@ -25,6 +25,7 @@ The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with
 - PDF parser: `pymupdf`
 - Ollama Cloud API (`https://ollama.com/api/chat`) using `gemma4:31b`
 - Ollama local API (`http://localhost:11434/api/chat`) using `gemma4:e4b`
+- SurrealDB (foundational context storage + retrieval for RAG)
 - Render Web Service (hosts FastAPI backend): `https://draftworks-api.onrender.com`
 - Vercel (hosts frontend web app): `https://draftworks-app.vercel.app`
 
