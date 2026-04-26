@@ -103,6 +103,7 @@ class AnalysisResult(BaseModel):
     sections_detected: list[str]
     issues: list[ComplianceIssue]
     zone_rows: list["ZoneItemRow"]
+    comparison_rows: list["ComparisonRow"]
     zone_markdown: str
     meta: AnalysisMeta
 
@@ -113,6 +114,18 @@ class ZoneItemRow(BaseModel):
     object_key: str
     object_values: list[str]
     line_number: int
+
+
+class ComparisonRow(BaseModel):
+    page: int
+    zone: str
+    object_key: str
+    found_value: str
+    context_object: str | None
+    context_key: str | None
+    context_value: str | None
+    status: Literal["match", "mismatch", "rule_mismatch", "no_context"]
+    suggested_value: str | None
 
 
 class ZoneExtractResult(BaseModel):
@@ -127,6 +140,13 @@ class ZoneExtractResult(BaseModel):
 class ContextRule:
     old_value: str
     new_value: str
+
+
+@dataclass
+class ContextEntry:
+    object_name: str | None
+    key: str
+    value: str
 
 
 @dataclass
@@ -250,11 +270,14 @@ async def analyze(
     zone_markdown = render_zone_rows_markdown(zone_rows, drawing.filename or "drawing")
     sections = detect_sections(page_texts, page_zone_texts)
 
-    context_rules = await extract_context_rules(context_files)
+    context_payloads = await read_uploaded_context_payloads(context_files)
+    context_rules = extract_context_rules_from_payloads(context_payloads)
+    context_entries = extract_context_entries_from_payloads(context_payloads)
     if use_foundational_context:
         query_text = " ".join(page_texts[:2])[:6000]
         foundational_docs = retrieve_foundational_docs_for_query(query_text, limit=8)
         context_rules.extend(extract_rules_from_foundational_docs(foundational_docs))
+    comparison_rows = compare_zone_rows_to_context(zone_rows, context_entries, context_rules)
     issues: list[ComplianceIssue] = []
     llm_used = False
     llm_error: str | None = None
@@ -288,6 +311,7 @@ async def analyze(
         sections_detected=sections,
         issues=issues,
         zone_rows=zone_rows,
+        comparison_rows=comparison_rows,
         zone_markdown=zone_markdown,
         meta=AnalysisMeta(
             pages_processed=len(page_texts),
@@ -675,20 +699,44 @@ def detect_sections(page_texts: list[str], page_zone_texts: list[dict[str, str]]
 
 
 async def extract_context_rules(files: list[UploadFile]) -> list[ContextRule]:
-    rules: list[ContextRule] = []
+    payloads = await read_uploaded_context_payloads(files)
+    return extract_context_rules_from_payloads(payloads)
 
+
+async def read_uploaded_context_payloads(files: list[UploadFile]) -> list[tuple[str, bytes]]:
+    payloads: list[tuple[str, bytes]] = []
     for file in files:
-        data = await file.read()
-        lower_name = file.filename.lower() if file.filename else ""
+        payloads.append((file.filename or "context.txt", await file.read()))
+    return payloads
 
+
+def extract_context_rules_from_payloads(payloads: list[tuple[str, bytes]]) -> list[ContextRule]:
+    rules: list[ContextRule] = []
+    for filename, data in payloads:
+        lower_name = filename.lower()
         if lower_name.endswith(".csv"):
             rules.extend(parse_csv_rules(data))
         elif lower_name.endswith(".json"):
             rules.extend(parse_json_rules(data))
         elif lower_name.endswith(".txt"):
             rules.extend(parse_txt_rules(data))
-
     return rules
+
+
+def extract_context_entries_from_payloads(payloads: list[tuple[str, bytes]]) -> list[ContextEntry]:
+    entries: list[ContextEntry] = []
+    for filename, data in payloads:
+        lower_name = filename.lower()
+        try:
+            if lower_name.endswith(".csv"):
+                entries.extend(parse_csv_context_entries(data))
+            elif lower_name.endswith(".json"):
+                entries.extend(parse_json_context_entries(data))
+            elif lower_name.endswith(".txt"):
+                entries.extend(parse_txt_context_entries(data))
+        except Exception:
+            continue
+    return dedupe_context_entries(entries)
 
 
 def extract_rules_from_foundational_docs(docs: list[FoundationalDoc]) -> list[ContextRule]:
@@ -883,6 +931,54 @@ def parse_csv_rules(data: bytes) -> list[ContextRule]:
     return rules
 
 
+def parse_csv_context_entries(data: bytes) -> list[ContextEntry]:
+    df = pd.read_csv(io.BytesIO(data))
+    normalized = {column.strip().lower(): column for column in df.columns}
+    object_col = (
+        normalized.get("object")
+        or normalized.get("zone")
+        or normalized.get("section")
+        or normalized.get("category")
+    )
+    key_col = (
+        normalized.get("key")
+        or normalized.get("object_key")
+        or normalized.get("field")
+        or normalized.get("name")
+    )
+    value_col = (
+        normalized.get("value")
+        or normalized.get("expected")
+        or normalized.get("target")
+        or normalized.get("new")
+        or normalized.get("replacement")
+    )
+
+    # Fallback to two-column key/value CSVs.
+    if not key_col and not value_col and len(df.columns) >= 2:
+        key_col = df.columns[0]
+        value_col = df.columns[1]
+
+    entries: list[ContextEntry] = []
+    if not key_col or not value_col:
+        return entries
+
+    for _, row in df.iterrows():
+        key_raw = str(row.get(key_col, "")).strip()
+        value_raw = str(row.get(value_col, "")).strip()
+        object_raw = str(row.get(object_col, "")).strip() if object_col else ""
+        if not key_raw or not value_raw or key_raw.lower() == "nan" or value_raw.lower() == "nan":
+            continue
+        entries.append(
+            ContextEntry(
+                object_name=normalize_key(object_raw) if object_raw else None,
+                key=normalize_key(key_raw),
+                value=value_raw,
+            )
+        )
+    return entries
+
+
 def parse_json_rules(data: bytes) -> list[ContextRule]:
     payload = json.loads(data.decode("utf-8"))
     rules: list[ContextRule] = []
@@ -899,6 +995,56 @@ def parse_json_rules(data: bytes) -> list[ContextRule]:
     return rules
 
 
+def parse_json_context_entries(data: bytes) -> list[ContextEntry]:
+    payload = json.loads(data.decode("utf-8"))
+    entries: list[ContextEntry] = []
+
+    def add_entry(object_name: str | None, key: str, value: Any) -> None:
+        key_text = str(key).strip()
+        value_text = stringify_context_value(value)
+        if not key_text or not value_text:
+            return
+        entries.append(
+            ContextEntry(
+                object_name=normalize_key(object_name) if object_name else None,
+                key=normalize_key(key_text),
+                value=value_text,
+            )
+        )
+
+    def walk(node: Any, object_name: str | None = None) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item, object_name)
+            return
+        if not isinstance(node, dict):
+            return
+
+        # Direct schema support: {object, key, value}
+        key_candidate = node.get("key") or node.get("object_key") or node.get("field")
+        value_candidate = node.get("value") or node.get("expected") or node.get("target") or node.get("new")
+        object_candidate = node.get("object") or node.get("zone") or node.get("section") or object_name
+        if key_candidate is not None and value_candidate is not None:
+            add_entry(str(object_candidate).strip() if object_candidate else None, str(key_candidate), value_candidate)
+
+        # Generic nested object support: { notes: { material: "A36" } }
+        for k, v in node.items():
+            if k in {"object", "zone", "section", "key", "object_key", "field", "value", "expected", "target", "new"}:
+                continue
+            if isinstance(v, dict):
+                walk(v, k)
+            elif isinstance(v, list):
+                if v and all(not isinstance(item, (dict, list)) for item in v):
+                    add_entry(object_name, str(k), v)
+                else:
+                    walk(v, object_name)
+            else:
+                add_entry(object_name, str(k), v)
+
+    walk(payload, None)
+    return entries
+
+
 def parse_txt_rules(data: bytes) -> list[ContextRule]:
     rules: list[ContextRule] = []
     text = data.decode("utf-8", errors="ignore")
@@ -910,6 +1056,145 @@ def parse_txt_rules(data: bytes) -> list[ContextRule]:
                 rules.append(ContextRule(old_value=old_value, new_value=new_value))
 
     return rules
+
+
+def parse_txt_context_entries(data: bytes) -> list[ContextEntry]:
+    entries: list[ContextEntry] = []
+    text = data.decode("utf-8", errors="ignore")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # Supports:
+        # - zone.key: value
+        # - key: value
+        # - zone.key => value
+        # - key => value
+        match = re.match(r"^(?:(?P<object>[A-Za-z0-9_\-]+)\.)?(?P<key>[A-Za-z0-9_\-]+)\s*(?::|=>)\s*(?P<value>.+)$", stripped)
+        if not match:
+            continue
+
+        object_name = match.group("object")
+        key = normalize_key(match.group("key"))
+        value = match.group("value").strip()
+        if key and value:
+            entries.append(
+                ContextEntry(
+                    object_name=normalize_key(object_name) if object_name else None,
+                    key=key,
+                    value=value,
+                )
+            )
+    return entries
+
+
+def stringify_context_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        parts = [str(item).strip() for item in value if str(item).strip()]
+        return " | ".join(parts)
+    if isinstance(value, (dict,)):
+        try:
+            return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+        except Exception:
+            return str(value).strip()
+    return str(value).strip()
+
+
+def dedupe_context_entries(entries: list[ContextEntry]) -> list[ContextEntry]:
+    deduped: list[ContextEntry] = []
+    seen: set[tuple[str | None, str, str]] = set()
+    for entry in entries:
+        key = (entry.object_name, entry.key, entry.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
+
+
+def compare_zone_rows_to_context(
+    zone_rows: list[ZoneItemRow],
+    context_entries: list[ContextEntry],
+    rules: list[ContextRule],
+) -> list[ComparisonRow]:
+    by_object_and_key: dict[tuple[str, str], list[ContextEntry]] = {}
+    by_key: dict[str, list[ContextEntry]] = {}
+    for entry in context_entries:
+        by_key.setdefault(entry.key, []).append(entry)
+        if entry.object_name:
+            by_object_and_key.setdefault((entry.object_name, entry.key), []).append(entry)
+
+    comparisons: list[ComparisonRow] = []
+    for row in zone_rows:
+        drawing_value = " | ".join(row.object_values).strip()
+        zone_key = normalize_key(row.zone)
+        candidates = by_object_and_key.get((zone_key, row.object_key), []) or by_key.get(row.object_key, [])
+        selected = candidates[0] if candidates else None
+
+        status: Literal["match", "mismatch", "rule_mismatch", "no_context"] = "no_context"
+        suggested_value: str | None = None
+        context_object: str | None = None
+        context_key: str | None = None
+        context_value: str | None = None
+
+        if selected:
+            context_object = selected.object_name
+            context_key = selected.key
+            context_value = selected.value
+            if values_equivalent(row.object_values, selected.value):
+                status = "match"
+            else:
+                status = "mismatch"
+                suggested_value = selected.value
+        else:
+            rule_suggestion = suggest_value_from_rules(row.object_values, rules)
+            if rule_suggestion:
+                status = "rule_mismatch"
+                suggested_value = rule_suggestion
+
+        comparisons.append(
+            ComparisonRow(
+                page=row.page,
+                zone=row.zone,
+                object_key=row.object_key,
+                found_value=drawing_value,
+                context_object=context_object,
+                context_key=context_key,
+                context_value=context_value,
+                status=status,
+                suggested_value=suggested_value,
+            )
+        )
+
+    return comparisons
+
+
+def values_equivalent(found_values: list[str], context_value: str) -> bool:
+    norm_context = normalize_compare_text(context_value)
+    if not norm_context:
+        return False
+    for value in found_values:
+        if normalize_compare_text(value) == norm_context:
+            return True
+    return False
+
+
+def normalize_compare_text(value: str) -> str:
+    lowered = value.lower().strip()
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered
+
+
+def suggest_value_from_rules(found_values: list[str], rules: list[ContextRule]) -> str | None:
+    for value in found_values:
+        normalized_value = normalize_compare_text(value)
+        for rule in rules:
+            if normalize_compare_text(rule.old_value) in normalized_value:
+                return rule.new_value
+    return None
 
 
 def find_outdated_references(page_texts: list[str], rules: list[ContextRule]) -> list[ComplianceIssue]:

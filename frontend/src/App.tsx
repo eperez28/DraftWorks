@@ -29,12 +29,25 @@ type ZoneItemRow = {
   line_number: number
 }
 
+type ComparisonRow = {
+  page: number
+  zone: string
+  object_key: string
+  found_value: string
+  context_object: string | null
+  context_key: string | null
+  context_value: string | null
+  status: 'match' | 'mismatch' | 'rule_mismatch' | 'no_context'
+  suggested_value: string | null
+}
+
 type AnalysisResult = {
   run_id: string
   summary: string
   sections_detected: string[]
   issues: ComplianceIssue[]
   zone_rows: ZoneItemRow[]
+  comparison_rows: ComparisonRow[]
   zone_markdown: string
   meta: {
     pages_processed: number
@@ -70,13 +83,6 @@ export function App() {
   const severeCount = useMemo(() => {
     if (!result) return 0
     return result.issues.filter((i) => i.severity === 'high' || i.severity === 'critical').length
-  }, [result])
-
-  const zoneCountByName = useMemo(() => {
-    if (!result) return new Map<string, number>()
-    const counts = new Map<string, number>()
-    result.zone_rows.forEach((row) => counts.set(row.zone, (counts.get(row.zone) ?? 0) + 1))
-    return counts
   }, [result])
 
   useEffect(() => {
@@ -318,45 +324,39 @@ export function App() {
                 <span className="pill">High/Critical: {severeCount}</span>
                 <span className="pill">Sections: {result.sections_detected.join(', ') || 'none'}</span>
                 <span className="pill">LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
-                <span className="pill">Zone rows: {result.zone_rows.length}</span>
               </div>
               {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
 
-              <div className="kpis">
-                <span className="pill">notes: {zoneCountByName.get('notes') ?? 0}</span>
-                <span className="pill">revision: {zoneCountByName.get('revision_block') ?? 0}</span>
-                <span className="pill">title: {zoneCountByName.get('title_block') ?? 0}</span>
-                <span className="pill">drawing: {zoneCountByName.get('drawing_area') ?? 0}</span>
-              </div>
-
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Type</th>
-                      <th>Severity</th>
-                      <th>Page</th>
-                      <th>Section</th>
-                      <th>Evidence</th>
-                      <th>Expected</th>
-                      <th>Found</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.issues.map((issue) => (
-                      <tr key={issue.id}>
-                        <td>{issue.issue_type}</td>
-                        <td>{issue.severity}</td>
-                        <td>{issue.page ?? '-'}</td>
-                        <td>{issue.section}</td>
-                        <td>{issue.evidence}</td>
-                        <td>{issue.expected_value ?? '-'}</td>
-                        <td>{issue.found_value ?? '-'}</td>
+              {result.issues.length > 0 && (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Severity</th>
+                        <th>Page</th>
+                        <th>Section</th>
+                        <th>Evidence</th>
+                        <th>Expected</th>
+                        <th>Found</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {result.issues.map((issue) => (
+                        <tr key={issue.id}>
+                          <td>{issue.issue_type}</td>
+                          <td>{issue.severity}</td>
+                          <td>{issue.page ?? '-'}</td>
+                          <td>{issue.section}</td>
+                          <td>{issue.evidence}</td>
+                          <td>{issue.expected_value ?? '-'}</td>
+                          <td>{issue.found_value ?? '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               <div className="table-wrap">
                 <table>
@@ -364,19 +364,27 @@ export function App() {
                     <tr>
                       <th>Page</th>
                       <th>Zone</th>
-                      <th>Object key</th>
-                      <th>Values</th>
-                      <th>Line</th>
+                      <th>Object</th>
+                      <th>Drawing key</th>
+                      <th>Context key</th>
+                      <th>Found value</th>
+                      <th>Context value</th>
+                      <th>Status</th>
+                      <th>Suggested value</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {result.zone_rows.map((row, idx) => (
+                    {result.comparison_rows.map((row, idx) => (
                       <tr key={`${row.page}-${row.zone}-${row.object_key}-${idx}`}>
                         <td>{row.page}</td>
                         <td>{row.zone}</td>
+                        <td>{row.context_object ?? '-'}</td>
                         <td>{row.object_key}</td>
-                        <td>{row.object_values.join(' | ')}</td>
-                        <td>{row.line_number}</td>
+                        <td>{row.context_key ?? '-'}</td>
+                        <td>{row.found_value || '-'}</td>
+                        <td>{row.context_value ?? '-'}</td>
+                        <td>{row.status}</td>
+                        <td>{row.suggested_value ?? '-'}</td>
                       </tr>
                     ))}
                   </tbody>
