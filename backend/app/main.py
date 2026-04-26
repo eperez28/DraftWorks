@@ -303,7 +303,9 @@ async def analyze(
         context_sources=context_sources,
     )
     fallback_rows = compare_zone_rows_to_context(zone_rows, context_entries, context_rules)
-    comparison_rows = filter_rows_for_display(llm_rows if llm_rows else fallback_rows)
+    filtered_llm_rows = filter_rows_for_display(llm_rows)
+    filtered_fallback_rows = filter_rows_for_display(fallback_rows)
+    comparison_rows = filtered_llm_rows if filtered_llm_rows else filtered_fallback_rows
     issues: list[ComplianceIssue] = []
 
     issues.extend(find_outdated_references(page_texts, context_rules))
