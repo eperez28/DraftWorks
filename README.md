@@ -31,7 +31,7 @@ The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with
 ### A) Run Live (fastest)
 1. Go to live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
 2. Get Ollama API key:
-   1. Open `https://ollama.com/settings/keys`
+   1. Open [https://ollama.com/settings/keys](https://ollama.com/settings/keys)
    2. Sign in to your Ollama account
    3. Click `Create key`
    4. Copy the generated key
