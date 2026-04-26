@@ -1168,6 +1168,10 @@ def parse_xlsx_rules(data: bytes, source_name: str | None = None) -> list[Contex
                     source_ref=f"{sheet_name}!row:{row_idx}",
                 )
             )
+    # Support simple paired-sheet workbooks like:
+    # sheet OUTDATED: [value1, value2], sheet ACCEPTED: [value1, value2]
+    if not rules:
+        rules.extend(parse_xlsx_rules_from_sheet_pairs(data, source_name=source_name))
     return rules
 
 
@@ -1227,7 +1231,10 @@ def parse_docx_context_entries(data: bytes, source_name: str | None = None) -> l
 
 
 def iterate_xlsx_rows(data: bytes) -> list[tuple[str, int, dict[str, Any]]]:
-    sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, dtype=str)
+    try:
+        sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, dtype=str)
+    except Exception:
+        return []
     rows: list[tuple[str, int, dict[str, Any]]] = []
     for sheet_name, df in sheets.items():
         if df is None or df.empty:
@@ -1248,7 +1255,145 @@ def extract_xlsx_text(data: bytes) -> str:
             parts.append(f"{str(key).strip()}: {value_text}")
         if parts:
             lines.append(f"[{sheet_name} row {row_idx}] " + " | ".join(parts))
+    if not lines:
+        sheet_values = extract_xlsx_sheet_values(data)
+        for sheet_name, values in sheet_values.items():
+            for idx, value in enumerate(values, start=1):
+                lines.append(f"[{sheet_name} row {idx}] value: {value}")
     return "\n".join(lines)
+
+
+def parse_xlsx_rules_from_sheet_pairs(data: bytes, source_name: str | None = None) -> list[ContextRule]:
+    sheet_values = extract_xlsx_sheet_values(data)
+    if not sheet_values:
+        return []
+
+    outdated_name = first_matching_sheet_name(sheet_values.keys(), {"outdated", "deprecated", "obsolete", "old"})
+    accepted_name = first_matching_sheet_name(sheet_values.keys(), {"accepted", "approved", "new", "current"})
+
+    if not outdated_name or not accepted_name:
+        names = list(sheet_values.keys())
+        if len(names) >= 2:
+            outdated_name, accepted_name = names[0], names[1]
+        else:
+            return []
+
+    outdated_values = [v for v in sheet_values.get(outdated_name, []) if v.strip()]
+    accepted_values = [v for v in sheet_values.get(accepted_name, []) if v.strip()]
+    pair_count = min(len(outdated_values), len(accepted_values))
+    rules: list[ContextRule] = []
+    for idx in range(pair_count):
+        old_value = outdated_values[idx].strip()
+        new_value = accepted_values[idx].strip()
+        if not old_value or not new_value:
+            continue
+        rules.append(
+            ContextRule(
+                old_value=old_value,
+                new_value=new_value,
+                source_name=source_name,
+                source_ref=f"{outdated_name}/{accepted_name}!row:{idx+1}",
+            )
+        )
+    return rules
+
+
+def first_matching_sheet_name(sheet_names: Any, targets: set[str]) -> str | None:
+    for name in sheet_names:
+        normalized = normalize_key(str(name))
+        if normalized in targets:
+            return str(name)
+    return None
+
+
+def extract_xlsx_sheet_values(data: bytes) -> dict[str, list[str]]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            workbook_xml = archive.read("xl/workbook.xml").decode("utf-8", errors="ignore")
+            rels_xml = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8", errors="ignore")
+            shared_strings = extract_shared_strings(archive)
+            sheet_targets = parse_workbook_sheet_targets(workbook_xml, rels_xml)
+            result: dict[str, list[str]] = {}
+            for sheet_name, target in sheet_targets:
+                path = f"xl/{target}".replace("xl/xl/", "xl/")
+                if path not in archive.namelist():
+                    continue
+                sheet_xml = archive.read(path).decode("utf-8", errors="ignore")
+                values = extract_sheet_cell_values(sheet_xml, shared_strings)
+                if values:
+                    result[sheet_name] = values
+            return result
+    except Exception:
+        return {}
+
+
+def extract_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    xml_data = archive.read("xl/sharedStrings.xml").decode("utf-8", errors="ignore")
+    try:
+        root = ET.fromstring(xml_data)
+    except Exception:
+        return []
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    strings: list[str] = []
+    for si in root.findall(".//a:si", ns):
+        parts = [node.text or "" for node in si.findall(".//a:t", ns)]
+        strings.append("".join(parts).strip())
+    return strings
+
+
+def parse_workbook_sheet_targets(workbook_xml: str, rels_xml: str) -> list[tuple[str, str]]:
+    ns_main = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    ns_rel = {"r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+    relmap: dict[str, str] = {}
+    try:
+        rels_root = ET.fromstring(rels_xml)
+        for rel in rels_root.findall(".//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"):
+            rid = rel.attrib.get("Id")
+            target = rel.attrib.get("Target")
+            if rid and target:
+                relmap[rid] = target
+    except Exception:
+        return []
+    output: list[tuple[str, str]] = []
+    try:
+        wb_root = ET.fromstring(workbook_xml)
+        for sheet in wb_root.findall(".//a:sheets/a:sheet", ns_main):
+            name = sheet.attrib.get("name", "").strip()
+            rid = sheet.attrib.get(f"{{{ns_rel['r']}}}id")
+            if name and rid and rid in relmap:
+                output.append((name, relmap[rid]))
+    except Exception:
+        return []
+    return output
+
+
+def extract_sheet_cell_values(sheet_xml: str, shared_strings: list[str]) -> list[str]:
+    try:
+        root = ET.fromstring(sheet_xml)
+    except Exception:
+        return []
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    values: list[str] = []
+    for cell in root.findall(".//a:sheetData/a:row/a:c", ns):
+        cell_type = cell.attrib.get("t", "")
+        v_node = cell.find("a:v", ns)
+        if v_node is None or v_node.text is None:
+            continue
+        raw = v_node.text.strip()
+        if not raw:
+            continue
+        value = raw
+        if cell_type == "s":
+            try:
+                value = shared_strings[int(raw)]
+            except Exception:
+                value = raw
+        value = value.strip()
+        if value:
+            values.append(value)
+    return values
 
 
 def extract_docx_text(data: bytes) -> str:
