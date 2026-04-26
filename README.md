@@ -1,5 +1,7 @@
 # DraftWorks
 
+Live project URL: `https://draftworks-app.vercel.app`
+
 ## Team Name
 DraftWorks
 
@@ -36,7 +38,7 @@ npm --prefix frontend install
 python3 -m pip install -r backend/requirements.txt
 ```
 
-### Start (single command)
+### Start locally (single command)
 ```bash
 npm run dev
 ```
@@ -44,21 +46,42 @@ npm run dev
 - Frontend: `http://localhost:5173`
 - API: `http://localhost:8000`
 
-### Run online (webapp users paste their own key)
-Web app URL: `https://draftworks-app.vercel.app`
+### Three ways to run
+1. Hosted web app + Ollama Cloud key (fastest for demos)
+2. Local app + local Ollama model (`Run locally on device`)
+3. Local app + Ollama Cloud key (`Run online`)
+
+### 1) Hosted web app + Ollama Cloud key
+Web app: `https://draftworks-app.vercel.app`
 
 1. Create an Ollama API key at `https://ollama.com/settings/keys`.
 2. Open the webapp and select `Run online (Ollama Cloud)`.
 3. Paste the key in `Ollama API key`.
 4. Upload drawing/context and run analysis.
 
-### Run locally on device
+### 2) Local app + local Ollama
 1. Start local Ollama and pull model:
 ```bash
 ollama pull gemma4:e4b
 ```
 2. In webapp select `Run locally on device`.
 3. Upload drawing/context and run analysis.
+
+### 3) Local app + Ollama Cloud
+1. Start app with `npm run dev`.
+2. In webapp select `Run online`.
+3. Paste your Ollama API key and run analysis.
+
+### Hosted frontend API config (for Vercel)
+The frontend now reads `VITE_API_BASE_URL`.
+
+Use local default:
+```bash
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+For hosted usage, set `VITE_API_BASE_URL` in Vercel project settings to your deployed backend URL.
+Reference file: `frontend/.env.example`
 
 ### Optional backend env vars
 - `OLLAMA_LOCAL_URL` (default: `http://localhost:11434/api/chat`)

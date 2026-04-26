@@ -39,6 +39,8 @@ type AnalysisResult = {
   }
 }
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || 'http://localhost:8000'
+
 export function App() {
   const analyzerRef = useRef<HTMLElement | null>(null)
   const [drawing, setDrawing] = useState<File | null>(null)
@@ -94,7 +96,7 @@ export function App() {
     contextFiles.forEach((file) => formData.append('context_files', file))
 
     try {
-      const response = await fetch('http://localhost:8000/api/analyze', {
+      const response = await fetch(`${API_BASE_URL}/api/analyze`, {
         method: 'POST',
         body: formData,
       })
