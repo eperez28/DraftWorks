@@ -3,6 +3,11 @@
 ## Team Name
 DraftWorks
 
+### Team Members
+- Emanuel
+- Sanja
+- Axel
+
 ## Track
 GenAI.mil
 
@@ -12,11 +17,6 @@ Project built during the 2026 SCSP Hackathon in Boston.
 
 For the MVP, users upload a drawing PDF and optional context files (CSV/TXT/JSON). The app extracts drawing text, detects core sections, compares against known context updates, and returns issues in a structured format suitable for markup or redline overlays.
 The main drawing input now supports PDF and image files (JPG/JPEG/PNG/WEBP) with OCR.
-
-Team members:
-- Emanuel
-- Sanja
-- Axel
 
 ## Datasets/APIs Used
 - User-provided engineering drawing PDFs (primary input)
