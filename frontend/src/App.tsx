@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, useMemo, useRef, useState } from 'react'
 
 type Severity = 'low' | 'medium' | 'high' | 'critical'
 
@@ -40,6 +40,7 @@ type AnalysisResult = {
 }
 
 export function App() {
+  const analyzerRef = useRef<HTMLElement | null>(null)
   const [drawing, setDrawing] = useState<File | null>(null)
   const [contextFiles, setContextFiles] = useState<File[]>([])
   const [useFoundational, setUseFoundational] = useState(false)
@@ -64,10 +65,14 @@ export function App() {
     setContextFiles(files)
   }
 
+  const scrollToAnalyzer = () => {
+    analyzerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
     if (!drawing) {
-      setError('Please upload one drawing PDF first.')
+      setError('Please upload one drawing first.')
       return
     }
     if (inferenceMode === 'online' && !userApiKey.trim()) {
@@ -109,97 +114,157 @@ export function App() {
   }
 
   return (
-    <main className="page">
-      <header className="hero">
-        <h1>DraftWorks</h1>
-        <p className="subhead">AI drawing compliance checker MVP for defense and mechanical workflows.</p>
-      </header>
-
-      <section className="card">
-        <h2>Upload and Analyze</h2>
-        <form onSubmit={onSubmit} className="form-grid">
-          <fieldset className="mode-switch" aria-label="Inference mode">
-            <legend>Run mode</legend>
-            <label className="inline">
-              <input
-                type="radio"
-                name="inference_mode"
-                checked={inferenceMode === 'online'}
-                onChange={() => setInferenceMode('online')}
-              />
-              Run online (Ollama Cloud)
-            </label>
-            <label className="inline">
-              <input
-                type="radio"
-                name="inference_mode"
-                checked={inferenceMode === 'local'}
-                onChange={() => setInferenceMode('local')}
-              />
-              Run locally on device
-            </label>
-          </fieldset>
-
-          {inferenceMode === 'online' && (
-            <label>
-              Ollama API key (required for online mode)
-              <input
-                type="password"
-                placeholder="Paste your Ollama API key"
-                value={userApiKey}
-                onChange={(event) => setUserApiKey(event.target.value)}
-              />
-              <small>Your key is sent only with this request and is not persisted by the app.</small>
-            </label>
-          )}
-
-          <label>
-            Drawing file (required: PDF/JPG/PNG/WEBP)
-            <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf" onChange={onDrawingChange} />
-          </label>
-
-          <label>
-            Context files (optional: CSV, TXT, JSON)
-            <input type="file" multiple onChange={onContextChange} />
-          </label>
-
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={useFoundational}
-              onChange={(event) => setUseFoundational(event.target.checked)}
-            />
-            <span>
-              Include foundational org context (SurrealDB when connected)
-              <span
-                className="tooltip"
-                title="Planned rule: drawing-view item callouts will be validated against BOM rows for existence and quantity mismatches."
-              >
-                i
-              </span>
-            </span>
-          </label>
-
-          <button type="submit" disabled={isLoading}>
-            {isLoading ? 'Analyzing…' : 'Run compliance check'}
-          </button>
-        </form>
-        <div className="instructions">
-          <h3>How to run</h3>
-          <ol>
-            <li>
-              <strong>Run online:</strong> create key at <code>https://ollama.com/settings/keys</code>, select online mode, paste key, upload files, run.
-            </li>
-            <li>
-              <strong>Run locally on device:</strong> start Ollama locally, run <code>ollama pull gemma4:e4b</code>, choose local mode, upload files, run.
-            </li>
-          </ol>
+    <main className="site-shell">
+      <section className="hero-wrap">
+        <div className="hero-inner">
+          <h1>DraftWorks</h1>
+          <p>
+            Automatically validate engineering drawings against current standards and catch errors before they
+            trigger costly rework and delays.
+          </p>
+          <button className="hero-btn" onClick={scrollToAnalyzer}>Try Sample</button>
         </div>
-        {error && <p className="error">{error}</p>}
+      </section>
+
+      <section className="content-wrap split-block">
+        <h2>Manual drawing review is slow and error prone</h2>
+        <div className="stack-cards">
+          <article>
+            <h3>Explain the idea</h3>
+            <p>State what changed, where it changed, and what should replace it.</p>
+          </article>
+          <article>
+            <h3>In small parts</h3>
+            <p>Break checks into standards, specs, materials, and BOM consistency.</p>
+          </article>
+          <article>
+            <h3>With more detail</h3>
+            <p>Attach evidence and expected values so reviewers trust each flagged issue.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="content-wrap panel-grid" ref={analyzerRef}>
+        <article className="panel">
+          <h3>Manual drawing review is slow and error prone</h3>
+          <ul>
+            <li>Engineers manually cross-check drawings against standards, specs, and BOMs.</li>
+            <li>Small inconsistencies lead to costly review cycles and production delays.</li>
+            <li>Updates across materials and parts are difficult to track.</li>
+          </ul>
+        </article>
+
+        <article className="panel analyzer-panel">
+          <h3>How it works</h3>
+          <ol>
+            <li>Upload drawing (PDF/image)</li>
+            <li>Upload context</li>
+            <li>Compare and review issues</li>
+          </ol>
+
+          <form onSubmit={onSubmit} className="form-grid">
+            <fieldset className="mode-switch" aria-label="Inference mode">
+              <legend>Run mode</legend>
+              <label className="inline">
+                <input
+                  type="radio"
+                  name="inference_mode"
+                  checked={inferenceMode === 'online'}
+                  onChange={() => setInferenceMode('online')}
+                />
+                Run online
+              </label>
+              <label className="inline">
+                <input
+                  type="radio"
+                  name="inference_mode"
+                  checked={inferenceMode === 'local'}
+                  onChange={() => setInferenceMode('local')}
+                />
+                Run locally on device
+              </label>
+            </fieldset>
+
+            {inferenceMode === 'online' && (
+              <label>
+                Ollama API key
+                <input
+                  type="password"
+                  placeholder="Paste your Ollama API key"
+                  value={userApiKey}
+                  onChange={(event) => setUserApiKey(event.target.value)}
+                />
+              </label>
+            )}
+
+            <label>
+              Drawing file
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf" onChange={onDrawingChange} />
+            </label>
+
+            <label>
+              Context files
+              <input type="file" multiple onChange={onContextChange} />
+            </label>
+
+            <label className="inline checkbox-line">
+              <input
+                type="checkbox"
+                checked={useFoundational}
+                onChange={(event) => setUseFoundational(event.target.checked)}
+              />
+              Include foundational org context
+            </label>
+
+            <button type="submit" disabled={isLoading}>{isLoading ? 'Analyzing…' : 'Compare'}</button>
+          </form>
+
+          {error && <p className="error">{error}</p>}
+        </article>
+
+        <article className="panel">
+          <h3>What DraftWorks does</h3>
+          <ul>
+            <li>Detect outdated standards and specification references.</li>
+            <li>Validate material and coating compatibility.</li>
+            <li>Flag required updates directly for engineering review.</li>
+          </ul>
+        </article>
+
+        <article className="panel">
+          <div className="gradient-box" />
+          <h3>What DraftWorks does</h3>
+          <ul>
+            <li>Evidence-backed issue summaries</li>
+            <li>Clear expected vs found values</li>
+            <li>Fast demo-ready workflow</li>
+          </ul>
+        </article>
+      </section>
+
+      <section className="content-wrap card-row">
+        <h2>What DraftWorks does</h2>
+        <div className="feature-cards">
+          <article>
+            <h4>This outstanding object</h4>
+            <p>Call out a feature, benefit, or value that can stand on its own.</p>
+            <div className="thumb one" />
+          </article>
+          <article>
+            <h4>A greater object</h4>
+            <p>Call out a feature, benefit, or value that can stand on its own.</p>
+            <div className="thumb two" />
+          </article>
+          <article>
+            <h4>And another one</h4>
+            <p>Call out a feature, benefit, or value that can stand on its own.</p>
+            <div className="thumb three" />
+          </article>
+        </div>
       </section>
 
       {result && (
-        <section className="card">
+        <section className="content-wrap results-wrap">
           <h2>Results</h2>
           <p>{result.summary}</p>
           <div className="kpis">
@@ -209,7 +274,6 @@ export function App() {
             <span className="pill">Mode: {result.meta.inference_mode}</span>
             <span className="pill">LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
           </div>
-          {result.meta.llm_endpoint && <p className="meta-line">Endpoint: <code>{result.meta.llm_endpoint}</code></p>}
           {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
 
           <table>
@@ -240,6 +304,21 @@ export function App() {
           </table>
         </section>
       )}
+
+      <footer className="content-wrap footer-grid">
+        <article>
+          <h4>Here text</h4>
+          <p>Writing for websites is both simple and complex. Say what you mean in plain words.</p>
+        </article>
+        <article>
+          <h4>There text</h4>
+          <p>Are you including enough detail and references for reviewers to validate quickly?</p>
+        </article>
+        <article>
+          <h4>Everywhere text</h4>
+          <p>Structure matters. Surface the highest-risk changes first to reduce review cycles.</p>
+        </article>
+      </footer>
     </main>
   )
 }
