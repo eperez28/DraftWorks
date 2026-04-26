@@ -4,9 +4,9 @@
 DraftWorks
 
 ### Team Members
-- Emanuel
-- Sanja
-- Axel
+- Sanja Kirova
+- Axel Ortega
+- Emanuel Perez
 
 ## Track
 GenAI.mil
