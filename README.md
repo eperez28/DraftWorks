@@ -119,9 +119,20 @@ Required Render env vars for cloud mode:
 - `SURREAL_USER` / `SURREAL_PASS` (optional basic auth)
 - `SURREAL_TOKEN` (optional bearer token auth)
 - `SURREAL_TABLE` (default: `foundational_context`)
+- `SURREAL_CHUNK_TABLE` (default: `<SURREAL_TABLE>_chunks`)
+- `RAG_CHUNK_SIZE` (default: `1400`)
+- `RAG_CHUNK_OVERLAP` (default: `240`)
+- `RAG_MAX_DOCS_SCAN` (default: `250`)
+- `RAG_MAX_CHUNKS_SCAN` (default: `1200`)
 
 ### SurrealDB RAG (Foundational Context)
 When `Include foundational org context` is enabled in the app, `/api/analyze` retrieves relevant foundational docs from SurrealDB and merges extracted rules into comparison.
+
+RAG architecture (current):
+- Ingestion stores each uploaded foundational document in `SURREAL_TABLE`.
+- Documents are chunked and stored in `SURREAL_CHUNK_TABLE` with extracted terms.
+- Retrieval ranks chunks by query-term overlap and aggregates top chunks into doc context.
+- If chunk data is unavailable, retrieval falls back to doc-level matching.
 
 Ingest foundational context docs:
 ```bash
@@ -152,3 +163,12 @@ Each detected issue returns:
 ## MVP Notes
 - Drawing-view-to-BOM validation is called out in the UI and implemented as a first-pass check based on extracted item callouts.
 - Foundational org context checkbox is wired to SurrealDB-backed retrieval for MVP RAG.
+
+## Analysis Flow
+1. OCR/parser extracts drawing text.
+2. Rule checks run (standards/spec/BOM logic).
+3. Backend builds a prompt with drawing text + context rules (+ Surreal RAG context if enabled).
+4. It calls Gemma via Ollama:
+   - Cloud: `gemma4:31b` (online mode)
+   - Local: `gemma4:e4b` (local mode)
+5. Gemma returns structured issue candidates, then backend normalizes/dedupes and returns final results.
