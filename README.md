@@ -166,9 +166,16 @@ Each detected issue returns:
 
 ## Analysis Flow
 1. OCR/parser extracts drawing text.
-2. Rule checks run (standards/spec/BOM logic).
-3. Backend builds a prompt with drawing text + context rules (+ Surreal RAG context if enabled).
-4. It calls Gemma via Ollama:
+2. The backend applies a layout template and splits each page into zones:
+   - `notes` (top-left)
+   - `revision_block` (top-right)
+   - `title_block` (bottom-right)
+   - `drawing_area` (center/main viewport)
+3. Zone text is extracted from PDF geometry (`fitz` text blocks) and merged per zone.
+4. Rule checks run (standards/spec/BOM logic) on extracted page/zone text.
+5. If enabled, Surreal RAG retrieves relevant foundational context and merges context rules.
+6. Backend builds a prompt with drawing text + zone text + context rules.
+7. It calls Gemma via Ollama:
    - Cloud: `gemma4:31b` (online mode)
    - Local: `gemma4:e4b` (local mode)
-5. Gemma returns structured issue candidates, then backend normalizes/dedupes and returns final results.
+8. Gemma returns structured issue candidates, then backend normalizes/dedupes and returns final results.
