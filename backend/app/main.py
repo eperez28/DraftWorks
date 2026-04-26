@@ -51,6 +51,11 @@ SURREAL_USER = os.getenv("SURREAL_USER", "").strip()
 SURREAL_PASS = os.getenv("SURREAL_PASS", "").strip()
 SURREAL_TOKEN = os.getenv("SURREAL_TOKEN", "").strip()
 SURREAL_TABLE = os.getenv("SURREAL_TABLE", "foundational_context").strip() or "foundational_context"
+SURREAL_CHUNK_TABLE = os.getenv("SURREAL_CHUNK_TABLE", f"{SURREAL_TABLE}_chunks").strip() or f"{SURREAL_TABLE}_chunks"
+RAG_CHUNK_SIZE = max(400, int(os.getenv("RAG_CHUNK_SIZE", "1400")))
+RAG_CHUNK_OVERLAP = max(50, int(os.getenv("RAG_CHUNK_OVERLAP", "240")))
+RAG_MAX_DOCS_SCAN = max(50, int(os.getenv("RAG_MAX_DOCS_SCAN", "250")))
+RAG_MAX_CHUNKS_SCAN = max(100, int(os.getenv("RAG_MAX_CHUNKS_SCAN", "1200")))
 
 
 class ComplianceIssue(BaseModel):
@@ -112,6 +117,16 @@ class FoundationalDoc:
     id: str
     source_name: str
     content: str
+
+
+@dataclass
+class FoundationalChunk:
+    id: str
+    doc_id: str
+    source_name: str
+    chunk_index: int
+    content: str
+    terms: list[str]
 
 
 SECTION_PATTERNS = {
@@ -457,7 +472,14 @@ def retrieve_foundational_docs_for_query(query: str, limit: int = 8) -> list[Fou
     if not SURREAL_URL or not SURREAL_NS or not SURREAL_DB:
         return []
 
-    all_docs = fetch_recent_foundational_docs(max_docs=250)
+    chunks = fetch_recent_foundational_chunks(max_chunks=RAG_MAX_CHUNKS_SCAN)
+    if chunks:
+        ranked_chunks = rank_chunks_by_query(chunks, query)
+        if ranked_chunks:
+            selected = ranked_chunks[: max(4, limit * 3)]
+            return aggregate_chunks_to_docs(selected, limit=max(1, limit))
+
+    all_docs = fetch_recent_foundational_docs(max_docs=RAG_MAX_DOCS_SCAN)
     if not all_docs:
         return []
 
@@ -486,6 +508,79 @@ def rank_docs_by_query(docs: list[FoundationalDoc], query: str) -> list[Foundati
     if not scored:
         return docs[:8]
     return [doc for _, doc in scored]
+
+
+def rank_chunks_by_query(chunks: list[FoundationalChunk], query: str) -> list[FoundationalChunk]:
+    terms = extract_terms(query, limit=30)
+    if not terms:
+        return chunks[:16]
+
+    scored: list[tuple[float, FoundationalChunk]] = []
+    for chunk in chunks:
+        text = chunk.content.lower()
+        chunk_terms = chunk.terms or []
+        overlap = 0
+        weighted = 0
+        for term in terms:
+            if term in text:
+                overlap += 1
+            if term in chunk_terms:
+                weighted += 2
+
+        if overlap == 0 and weighted == 0:
+            continue
+
+        coverage = overlap / max(1, len(terms))
+        precision = overlap / max(1, len(set(chunk_terms)))
+        score = coverage + (weighted / max(1, len(terms) * 2)) + (precision * 0.2)
+        scored.append((score, chunk))
+
+    scored.sort(key=lambda row: row[0], reverse=True)
+    if not scored:
+        return chunks[:16]
+    return [chunk for _, chunk in scored]
+
+
+def aggregate_chunks_to_docs(chunks: list[FoundationalChunk], limit: int) -> list[FoundationalDoc]:
+    doc_map: dict[str, list[FoundationalChunk]] = {}
+    for chunk in chunks:
+        doc_map.setdefault(chunk.doc_id, []).append(chunk)
+
+    docs: list[FoundationalDoc] = []
+    for doc_id, group in doc_map.items():
+        ordered = sorted(group, key=lambda c: c.chunk_index)
+        source_name = ordered[0].source_name
+        merged = "\n".join(chunk.content.strip() for chunk in ordered if chunk.content.strip())
+        docs.append(FoundationalDoc(id=doc_id, source_name=source_name, content=truncate(merged, 9000)))
+
+    docs.sort(key=lambda doc: len(doc.content), reverse=True)
+    return docs[: max(1, limit)]
+
+
+def chunk_text(content: str, chunk_size: int = RAG_CHUNK_SIZE, overlap: int = RAG_CHUNK_OVERLAP) -> list[str]:
+    cleaned = re.sub(r"\n{3,}", "\n\n", content.strip())
+    if not cleaned:
+        return []
+
+    if overlap >= chunk_size:
+        overlap = max(50, chunk_size // 6)
+
+    chunks: list[str] = []
+    start = 0
+    total = len(cleaned)
+    while start < total:
+        end = min(total, start + chunk_size)
+        if end < total:
+            next_break = cleaned.rfind("\n\n", start, end)
+            if next_break > start + 200:
+                end = next_break
+        chunk = cleaned[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= total:
+            break
+        start = max(0, end - overlap)
+    return chunks
 
 
 def extract_terms(text: str, limit: int = 20) -> list[str]:
@@ -821,12 +916,51 @@ def store_foundational_doc(source_name: str, content: str, terms: list[str]) -> 
         f"terms = [{terms_sql}], "
         f"created_at = time::now();"
     )
-    surreal_query(query)
+    result = surreal_query(query)
+    doc_id = extract_created_id(result)
+    if not doc_id:
+        return
+    store_foundational_chunks(doc_id=doc_id, source_name=source_name, content=content)
+
+
+def extract_created_id(payload: list[dict[str, Any]]) -> str | None:
+    if not payload:
+        return None
+    first_result = payload[0].get("result")
+    if isinstance(first_result, list) and first_result:
+        first = first_result[0]
+        if isinstance(first, dict) and first.get("id"):
+            return str(first["id"])
+    if isinstance(first_result, dict) and first_result.get("id"):
+        return str(first_result["id"])
+    return None
+
+
+def store_foundational_chunks(doc_id: str, source_name: str, content: str) -> None:
+    chunks = chunk_text(content)
+    if not chunks:
+        return
+
+    escaped_doc_id = sql_quote(doc_id)
+    escaped_source_name = sql_quote(source_name)
+    for idx, chunk in enumerate(chunks):
+        chunk_terms = extract_terms(chunk, limit=24)
+        terms_sql = ", ".join(sql_quote(term) for term in chunk_terms)
+        chunk_query = (
+            f"CREATE {SURREAL_CHUNK_TABLE} SET "
+            f"doc_id = {escaped_doc_id}, "
+            f"source_name = {escaped_source_name}, "
+            f"chunk_index = {idx}, "
+            f"content = {sql_quote(chunk)}, "
+            f"terms = [{terms_sql}], "
+            f"created_at = time::now();"
+        )
+        surreal_query(chunk_query)
 
 
 def fetch_recent_foundational_docs(max_docs: int = 250) -> list[FoundationalDoc]:
     query = (
-        f"SELECT id, source_name, content "
+        f"SELECT id, source_name, content, created_at "
         f"FROM {SURREAL_TABLE} "
         f"ORDER BY created_at DESC "
         f"LIMIT {max(1, min(max_docs, 500))};"
@@ -845,6 +979,37 @@ def fetch_recent_foundational_docs(max_docs: int = 250) -> list[FoundationalDoc]
             )
         )
     return docs
+
+
+def fetch_recent_foundational_chunks(max_chunks: int = 1200) -> list[FoundationalChunk]:
+    query = (
+        f"SELECT id, doc_id, source_name, chunk_index, content, terms, created_at "
+        f"FROM {SURREAL_CHUNK_TABLE} "
+        f"ORDER BY created_at DESC "
+        f"LIMIT {max(1, min(max_chunks, 5000))};"
+    )
+    payload = surreal_query(query)
+    rows = payload[0].get("result", []) if payload else []
+    chunks: list[FoundationalChunk] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_terms = row.get("terms")
+        terms: list[str] = []
+        if isinstance(raw_terms, list):
+            terms = [str(term) for term in raw_terms if str(term).strip()]
+
+        chunks.append(
+            FoundationalChunk(
+                id=str(row.get("id", "")),
+                doc_id=str(row.get("doc_id", "")),
+                source_name=str(row.get("source_name", "unknown")),
+                chunk_index=int(row.get("chunk_index", 0)),
+                content=str(row.get("content", "")),
+                terms=terms,
+            )
+        )
+    return chunks
 
 
 def surreal_query(sql: str) -> list[dict[str, Any]]:
