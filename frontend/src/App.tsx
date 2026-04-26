@@ -41,12 +41,15 @@ type AnalysisResult = {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || 'http://localhost:8000'
 
+const fileKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`
+
 export function App() {
   const resultsRef = useRef<HTMLElement | null>(null)
   const [drawing, setDrawing] = useState<File | null>(null)
   const [contextFiles, setContextFiles] = useState<File[]>([])
   const [useFoundational, setUseFoundational] = useState(false)
   const [inferenceMode, setInferenceMode] = useState<'online' | 'local'>('online')
+  const [inferenceOpen, setInferenceOpen] = useState(true)
   const [userApiKey, setUserApiKey] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
@@ -62,14 +65,32 @@ export function App() {
     resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [result])
 
+  useEffect(() => {
+    if (inferenceMode === 'online' && userApiKey.trim()) {
+      setInferenceOpen(false)
+    }
+  }, [inferenceMode, userApiKey])
+
   const onDrawingChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null
     setDrawing(file)
   }
 
   const onContextChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? [])
-    setContextFiles(files)
+    const incoming = Array.from(event.target.files ?? [])
+    if (!incoming.length) return
+
+    setContextFiles((prev) => {
+      const map = new Map(prev.map((f) => [fileKey(f), f]))
+      incoming.forEach((file) => map.set(fileKey(file), file))
+      return Array.from(map.values())
+    })
+    event.target.value = ''
+  }
+
+  const removeContextFile = (target: File) => {
+    const targetKey = fileKey(target)
+    setContextFiles((prev) => prev.filter((file) => fileKey(file) !== targetKey))
   }
 
   const onSubmit = async (event: FormEvent) => {
@@ -121,75 +142,122 @@ export function App() {
       <header className="app-header">
         <div>
           <p className="eyebrow">DraftWorks</p>
-          <h1>Drawing Compliance Workbench</h1>
+          <h1>Engineering Review Workbench</h1>
+          <p className="subline">Upload drawing + context, run checks, and ship findings faster.</p>
         </div>
         <div className="status-chips">
           <span className="pill">Mode: {inferenceMode}</span>
+          <span className="pill">Drawing: {drawing ? 'attached' : 'missing'}</span>
           <span className="pill">Context files: {contextFiles.length}</span>
-          <span className="pill">Drawing: {drawing?.name ?? 'none'}</span>
         </div>
       </header>
 
       <section className="app-workspace">
         <aside className="control-panel">
           <h2>Run Analysis</h2>
-          <p>Upload the drawing first, then compare against your reference context.</p>
+          <p>Complete these steps, then hit compare.</p>
 
           <form onSubmit={onSubmit} className="form-grid">
-            <fieldset className="mode-switch" aria-label="Inference mode">
-              <legend>Inference mode</legend>
-              <label className="inline">
-                <input
-                  type="radio"
-                  name="inference_mode"
-                  checked={inferenceMode === 'online'}
-                  onChange={() => setInferenceMode('online')}
-                />
-                Run online (Ollama Cloud)
-              </label>
-              <label className="inline">
-                <input
-                  type="radio"
-                  name="inference_mode"
-                  checked={inferenceMode === 'local'}
-                  onChange={() => setInferenceMode('local')}
-                />
-                Run locally on device
-              </label>
-            </fieldset>
+            <section className="setting-card">
+              <div className="card-head">
+                <h3>1. Inference Settings</h3>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() => setInferenceOpen((prev) => !prev)}
+                >
+                  {inferenceOpen ? 'Collapse' : 'Edit'}
+                </button>
+              </div>
 
-            {inferenceMode === 'online' && (
+              {inferenceOpen ? (
+                <div className="stack">
+                  <fieldset className="mode-switch" aria-label="Inference mode">
+                    <legend>Inference mode</legend>
+                    <label className="inline">
+                      <input
+                        type="radio"
+                        name="inference_mode"
+                        checked={inferenceMode === 'online'}
+                        onChange={() => setInferenceMode('online')}
+                      />
+                      Run online (Ollama Cloud)
+                    </label>
+                    <label className="inline">
+                      <input
+                        type="radio"
+                        name="inference_mode"
+                        checked={inferenceMode === 'local'}
+                        onChange={() => setInferenceMode('local')}
+                      />
+                      Run locally on device
+                    </label>
+                  </fieldset>
+
+                  {inferenceMode === 'online' && (
+                    <label>
+                      Ollama API key
+                      <input
+                        type="password"
+                        placeholder="Paste your Ollama API key"
+                        value={userApiKey}
+                        onChange={(event) => setUserApiKey(event.target.value)}
+                      />
+                    </label>
+                  )}
+                </div>
+              ) : (
+                <p className="mini-note">
+                  {inferenceMode === 'online' && userApiKey.trim()
+                    ? 'Online mode selected. API key saved.'
+                    : `Mode selected: ${inferenceMode}`}
+                </p>
+              )}
+            </section>
+
+            <section className="setting-card">
+              <h3>2. Files</h3>
+
               <label>
-                Ollama API key
+                Drawing file
                 <input
-                  type="password"
-                  placeholder="Paste your Ollama API key"
-                  value={userApiKey}
-                  onChange={(event) => setUserApiKey(event.target.value)}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+                  onChange={onDrawingChange}
                 />
               </label>
-            )}
 
-            <label>
-              Drawing file
-              <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf" onChange={onDrawingChange} />
-            </label>
+              <label>
+                Context files (multi-select supported)
+                <input type="file" multiple onChange={onContextChange} />
+              </label>
 
-            <label>
-              Context files
-              <input type="file" multiple onChange={onContextChange} />
-            </label>
+              {contextFiles.length > 0 && (
+                <ul className="file-list">
+                  {contextFiles.map((file) => (
+                    <li key={fileKey(file)}>
+                      <span>{file.name}</span>
+                      <button type="button" className="chip-btn" onClick={() => removeContextFile(file)}>
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
 
-            <label className="inline checkbox-line">
-              <input
-                type="checkbox"
-                checked={useFoundational}
-                onChange={(event) => setUseFoundational(event.target.checked)}
-              />
-              Include foundational org context (SurrealDB)
-            </label>
+              <label className="inline checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={useFoundational}
+                  onChange={(event) => setUseFoundational(event.target.checked)}
+                />
+                Include foundational org context (SurrealDB)
+              </label>
+            </section>
 
-            <button type="submit" disabled={isLoading}>{isLoading ? 'Analyzing…' : 'Compare'}</button>
+            <button className="primary-btn" type="submit" disabled={isLoading}>
+              {isLoading ? 'Analyzing…' : 'Compare'}
+            </button>
           </form>
 
           {error && <p className="error">{error}</p>}
@@ -198,8 +266,7 @@ export function App() {
         <section className="results-panel" ref={resultsRef}>
           <div className="results-head">
             <h2>Results</h2>
-            {result && <p>{result.summary}</p>}
-            {!result && <p>Run a comparison to generate compliance findings.</p>}
+            {result ? <p>{result.summary}</p> : <p>Waiting for your first run.</p>}
           </div>
 
           {result && (
@@ -208,9 +275,7 @@ export function App() {
                 <span className="pill">Total issues: {result.issues.length}</span>
                 <span className="pill">High/Critical: {severeCount}</span>
                 <span className="pill">Sections: {result.sections_detected.join(', ') || 'none'}</span>
-                <span className="pill">
-                  LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}
-                </span>
+                <span className="pill">LLM: {result.meta.llm_used ? `used (${result.meta.llm_model ?? 'unknown'})` : 'not used'}</span>
               </div>
               {result.meta.llm_error && <p className="error">LLM fallback: {result.meta.llm_error}</p>}
 
