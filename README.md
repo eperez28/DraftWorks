@@ -1,6 +1,6 @@
 # DraftWorks
 
-Live project URL: `https://draftworks-app.vercel.app`
+Live project URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
 
 ## Team Name
 DraftWorks
@@ -47,11 +47,12 @@ npm run dev
 - API: `http://localhost:8000`
 
 ### Three ways to run
-1. Hosted web app + Ollama Cloud key (fastest for demos)
-2. Local app + local Ollama model (`Run locally on device`)
-3. Local app + Ollama Cloud key (`Run online`)
+1. Use our webapp + bring your own Ollama Cloud key  
+Live URL: [https://draftworks-app.vercel.app](https://draftworks-app.vercel.app)
+2a. Fork the repo + bring your own Ollama Cloud key (`Run online`)
+2b. Fork the repo + run Ollama locally on device (`Run locally on device`)
 
-### 1) Hosted web app + Ollama Cloud key
+### 1) Use our webapp + bring your own Ollama Cloud key
 Web app: `https://draftworks-app.vercel.app`
 
 1. Create an Ollama API key at `https://ollama.com/settings/keys`.
@@ -59,7 +60,7 @@ Web app: `https://draftworks-app.vercel.app`
 3. Paste the key in `Ollama API key`.
 4. Upload drawing/context and run analysis.
 
-### 2) Local app + local Ollama
+### 2) Fork the repo + run Ollama locally on device
 1. Start local Ollama and pull model:
 ```bash
 ollama pull gemma4:e4b
@@ -67,7 +68,7 @@ ollama pull gemma4:e4b
 2. In webapp select `Run locally on device`.
 3. Upload drawing/context and run analysis.
 
-### 3) Local app + Ollama Cloud
+### 3) Fork the repo + bring your own Ollama Cloud key
 1. Start app with `npm run dev`.
 2. In webapp select `Run online`.
 3. Paste your Ollama API key and run analysis.
